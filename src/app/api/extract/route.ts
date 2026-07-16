@@ -1,21 +1,51 @@
 import { NextRequest, NextResponse } from "next/server";
-import { exec } from "child_process";
-import { promisify } from "util";
+import { Innertube, Platform } from "youtubei.js";
+import vm from "node:vm";
 
-const execAsync = promisify(exec);
+// Provide a JavaScript evaluator for URL deciphering
+// youtubei.js v17+ requires this to be set manually
+const originalShim = Platform.shim;
+Platform.load({
+  ...originalShim,
+  eval(data, env) {
+    // The generated script contains top-level return statements,
+    // so we wrap it in a function and execute it using vm.compileFunction
+    const keys = Object.keys(env);
+    const values = keys.map((k) => env[k]);
+    const fn = vm.compileFunction(data.output, keys, {
+      parsingContext: vm.createContext({}),
+    });
+    return fn(...values) as Record<string, unknown>;
+  },
+});
 
-// Cache extracted URLs to avoid re-running yt-dlp for the same track
-const urlCache = new Map<string, { url: string; expiresAt: number; title: string; artist: string; duration: number; thumbnail: string }>();
-
-// Clean expired cache entries every 30 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, value] of urlCache.entries()) {
-    if (value.expiresAt < now) {
-      urlCache.delete(key);
-    }
+// Cache extracted URLs to avoid re-fetching for the same track
+const urlCache = new Map<
+  string,
+  {
+    url: string;
+    expiresAt: number;
+    title: string;
+    artist: string;
+    duration: number;
+    thumbnail: string;
   }
-}, 30 * 60 * 1000);
+>();
+
+// Singleton Innertube instance
+let innertubeInstance: Awaited<ReturnType<typeof Innertube.create>> | null =
+  null;
+
+async function getInnertube() {
+  if (!innertubeInstance) {
+    innertubeInstance = await Innertube.create({
+      retrieve_player: true,
+      enable_safety_mode: false,
+      generate_session_locally: true,
+    });
+  }
+  return innertubeInstance;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -52,57 +82,100 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const ytUrl = `https://music.youtube.com/watch?v=${videoId}`;
+    const innertube = await getInnertube();
 
-    // Run URL extraction and metadata fetch in parallel for speed
-    const [urlResult, infoResult] = await Promise.allSettled([
-      execAsync(
-        `yt-dlp -f "bestaudio[ext=m4a]/bestaudio/best" -g --no-warnings --no-check-certificates "${ytUrl}"`,
-        { timeout: 15000 }
-      ),
-      execAsync(
-        `yt-dlp -j --no-warnings --no-check-certificates "${ytUrl}"`,
-        { timeout: 15000 }
-      ),
-    ]);
+    // Get video info using YTMUSIC client
+    const info = await innertube.getBasicInfo(videoId, { client: "YTMUSIC" });
 
-    if (urlResult.status !== "fulfilled" || !urlResult.value.stdout.trim()) {
+    if (!info) {
       return NextResponse.json(
-        { error: "Could not extract stream URL" },
+        { error: "Could not get video info" },
         { status: 404 }
       );
     }
 
-    const streamUrl = urlResult.value.stdout.trim();
+    // Get the best audio stream URL
+    const streamingData = info.streaming_data;
 
-    let title = "";
-    let artist = "";
-    let duration = 0;
-    let thumbnail = "";
+    if (!streamingData) {
+      return NextResponse.json(
+        { error: "Could not extract stream URL", details: "No streaming data available" },
+        { status: 404 }
+      );
+    }
 
-    if (infoResult.status === "fulfilled") {
-      try {
-        const info = JSON.parse(infoResult.value.stdout);
-        title = info.title || "";
-        artist = info.artist || info.uploader || info.channel || "";
-        duration = info.duration || 0;
-        thumbnail =
-          info.thumbnail ||
-          info.thumbnails?.[info.thumbnails.length - 1]?.url ||
-          "";
-      } catch {
-        // JSON parse failed, ignore
+    // Try adaptive formats first (audio-only), then regular formats
+    const audioFormats = [
+      ...(streamingData.adaptive_formats || []),
+      ...(streamingData.formats || []),
+    ].filter((f) => f.mime_type?.startsWith("audio/"));
+
+    // Sort by bitrate to get best quality
+    audioFormats.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+
+    let streamUrl: string | null = null;
+    let mimeType = "audio/mp4";
+    let bitrate = 128000;
+
+    // Try to get a decipher'd URL from the best audio format
+    for (const format of audioFormats) {
+      const url = await format.decipher(innertube.session.player);
+      if (url) {
+        streamUrl = url;
+        mimeType = format.mime_type || "audio/mp4";
+        bitrate = format.bitrate || 128000;
+        break;
       }
     }
 
+    // Fallback: try all formats if no audio-only found
+    if (!streamUrl) {
+      const allFormats = [
+        ...(streamingData.adaptive_formats || []),
+        ...(streamingData.formats || []),
+      ];
+      for (const format of allFormats) {
+        const url = await format.decipher(innertube.session.player);
+        if (url) {
+          streamUrl = url;
+          mimeType = format.mime_type || "audio/mp4";
+          bitrate = format.bitrate || 128000;
+          break;
+        }
+      }
+    }
+
+    if (!streamUrl) {
+      return NextResponse.json(
+        { error: "Could not extract stream URL", details: "No playable formats found" },
+        { status: 404 }
+      );
+    }
+
+    // Extract metadata
+    const title =
+      info.basic_info?.title || "";
+    const artist =
+      info.basic_info?.author || "";
+    const duration = info.basic_info?.duration || 0;
+    const thumbnail =
+      info.basic_info?.thumbnail?.[0]?.url || "";
+
     // Cache for 4 hours (URLs typically last 6 hours)
     const expiresAt = Date.now() + 4 * 60 * 60 * 1000;
-    urlCache.set(videoId, { url: streamUrl, expiresAt, title, artist, duration, thumbnail });
+    urlCache.set(videoId, {
+      url: streamUrl,
+      expiresAt,
+      title,
+      artist,
+      duration,
+      thumbnail,
+    });
 
     return NextResponse.json({
       url: streamUrl,
-      mimeType: "audio/mp4",
-      bitrate: 128000,
+      mimeType,
+      bitrate,
       duration,
       expiresAt,
       videoId,
