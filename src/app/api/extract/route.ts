@@ -5,10 +5,7 @@ let innertube: Innertube | null = null;
 
 async function getInnertube() {
   if (!innertube) {
-    innertube = await Innertube.create({
-      lang: "en",
-      location: "US",
-    });
+    innertube = await Innertube.create({ lang: "en", location: "US" });
   }
   return innertube;
 }
@@ -56,63 +53,51 @@ export async function POST(request: NextRequest) {
 
     const yt = await getInnertube();
 
-    // Get track info using TV_EMBEDDED client (more permissive for server-side)
-    const info = await yt.getInfo(videoId, { client: "TV_EMBEDDED" });
+    // Try multiple clients in order of likelihood to work
+    const clients = ["YTMUSIC", "WEB", "ANDROID"] as const;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let info: any = null;
+    let usedClient = "";
 
-    if (!info || !info.streaming_data) {
-      // Fallback: try with WEB client
-      innertube = null;
-      const ytFallback = await Innertube.create({ lang: "en", location: "US" });
-      const infoFallback = await ytFallback.music.getInfo(videoId);
-
-      if (!infoFallback) {
-        return NextResponse.json(
-          { error: "Could not fetch track info" },
-          { status: 404 }
-        );
+    for (const client of clients) {
+      try {
+        if (client === "YTMUSIC") {
+          info = await yt.music.getInfo(videoId);
+        } else {
+          info = await yt.getInfo(videoId, { client });
+        }
+        if (info?.streaming_data) {
+          usedClient = client;
+          break;
+        }
+      } catch (e) {
+        console.log(`Client ${client} failed for ${videoId}:`, e instanceof Error ? e.message : e);
+        continue;
       }
-
-      const format = infoFallback.chooseFormat({ type: "audio", quality: "best" });
-      if (!format) {
-        return NextResponse.json(
-          { error: "Could not find audio format" },
-          { status: 404 }
-        );
-      }
-
-      const streamUrl = await format.decipher(ytFallback.session.player);
-      if (!streamUrl) {
-        return NextResponse.json(
-          { error: "Could not decipher stream URL" },
-          { status: 404 }
-        );
-      }
-
-      const title = infoFallback.basic_info?.title || "";
-      const artist = infoFallback.basic_info?.author || "";
-      const duration = infoFallback.basic_info?.duration || 0;
-      const thumbnail =
-        infoFallback.basic_info?.thumbnail?.[infoFallback.basic_info.thumbnail.length - 1]?.url || "";
-
-      const expiresAt = Date.now() + 4 * 60 * 60 * 1000;
-      urlCache.set(videoId, { url: streamUrl, expiresAt, title, artist, duration, thumbnail });
-
-      return NextResponse.json({
-        url: streamUrl,
-        mimeType: format.mime_type || "audio/mp4",
-        bitrate: format.bitrate || 128000,
-        duration,
-        expiresAt,
-        videoId,
-        title,
-        artist,
-        thumbnail,
-        cached: false,
-      });
     }
 
-    // Use the TV_EMBEDDED response (more permissive)
-    const format = info.chooseFormat({ type: "audio", quality: "best" });
+    if (!info?.streaming_data) {
+      return NextResponse.json(
+        { error: "Streaming data not available", details: "All clients failed to get streaming data" },
+        { status: 404 }
+      );
+    }
+
+    // Choose the best audio format
+    let format;
+    try {
+      format = info.chooseFormat({ type: "audio", quality: "best" });
+    } catch {
+      // If no audio-only format, try any format
+      try {
+        format = info.chooseFormat({ quality: "best" });
+      } catch {
+        return NextResponse.json(
+          { error: "No suitable format found" },
+          { status: 404 }
+        );
+      }
+    }
 
     if (!format) {
       return NextResponse.json(
@@ -121,6 +106,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Get the streaming URL
     const streamUrl = await format.decipher(yt.session.player);
 
     if (!streamUrl) {
@@ -154,6 +140,7 @@ export async function POST(request: NextRequest) {
       artist,
       thumbnail,
       cached: false,
+      client: usedClient,
     });
   } catch (error: unknown) {
     console.error("Extract error:", error);
