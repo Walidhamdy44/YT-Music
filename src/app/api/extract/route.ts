@@ -5,7 +5,10 @@ let innertube: Innertube | null = null;
 
 async function getInnertube() {
   if (!innertube) {
-    innertube = await Innertube.create({ lang: "en", location: "US" });
+    innertube = await Innertube.create({
+      lang: "en",
+      location: "US",
+    });
   }
   return innertube;
 }
@@ -53,30 +56,71 @@ export async function POST(request: NextRequest) {
 
     const yt = await getInnertube();
 
-    // Get track info using youtubei.js
-    const info = await yt.music.getInfo(videoId);
+    // Get track info using TV_EMBEDDED client (more permissive for server-side)
+    const info = await yt.getInfo(videoId, { client: "TV_EMBEDDED" });
 
-    if (!info) {
-      return NextResponse.json(
-        { error: "Could not fetch track info" },
-        { status: 404 }
-      );
+    if (!info || !info.streaming_data) {
+      // Fallback: try with WEB client
+      innertube = null;
+      const ytFallback = await Innertube.create({ lang: "en", location: "US" });
+      const infoFallback = await ytFallback.music.getInfo(videoId);
+
+      if (!infoFallback) {
+        return NextResponse.json(
+          { error: "Could not fetch track info" },
+          { status: 404 }
+        );
+      }
+
+      const format = infoFallback.chooseFormat({ type: "audio", quality: "best" });
+      if (!format) {
+        return NextResponse.json(
+          { error: "Could not find audio format" },
+          { status: 404 }
+        );
+      }
+
+      const streamUrl = await format.decipher(ytFallback.session.player);
+      if (!streamUrl) {
+        return NextResponse.json(
+          { error: "Could not decipher stream URL" },
+          { status: 404 }
+        );
+      }
+
+      const title = infoFallback.basic_info?.title || "";
+      const artist = infoFallback.basic_info?.author || "";
+      const duration = infoFallback.basic_info?.duration || 0;
+      const thumbnail =
+        infoFallback.basic_info?.thumbnail?.[infoFallback.basic_info.thumbnail.length - 1]?.url || "";
+
+      const expiresAt = Date.now() + 4 * 60 * 60 * 1000;
+      urlCache.set(videoId, { url: streamUrl, expiresAt, title, artist, duration, thumbnail });
+
+      return NextResponse.json({
+        url: streamUrl,
+        mimeType: format.mime_type || "audio/mp4",
+        bitrate: format.bitrate || 128000,
+        duration,
+        expiresAt,
+        videoId,
+        title,
+        artist,
+        thumbnail,
+        cached: false,
+      });
     }
 
-    // Choose the best audio format
-    const format = info.chooseFormat({
-      type: "audio",
-      quality: "best",
-    });
+    // Use the TV_EMBEDDED response (more permissive)
+    const format = info.chooseFormat({ type: "audio", quality: "best" });
 
     if (!format) {
       return NextResponse.json(
-        { error: "Could not extract stream URL" },
+        { error: "Could not find audio format" },
         { status: 404 }
       );
     }
 
-    // Get the streaming URL
     const streamUrl = await format.decipher(yt.session.player);
 
     if (!streamUrl) {
@@ -95,7 +139,7 @@ export async function POST(request: NextRequest) {
       info.basic_info?.thumbnail?.[0]?.url ||
       "";
 
-    // Cache for 4 hours (URLs typically last 6 hours)
+    // Cache for 4 hours
     const expiresAt = Date.now() + 4 * 60 * 60 * 1000;
     urlCache.set(videoId, { url: streamUrl, expiresAt, title, artist, duration, thumbnail });
 
@@ -113,7 +157,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (error: unknown) {
     console.error("Extract error:", error);
-    innertube = null; // Reset on error
+    innertube = null;
     const message = error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json(
       { error: "Failed to extract stream", details: message },
