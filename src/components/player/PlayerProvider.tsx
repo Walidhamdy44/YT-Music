@@ -141,7 +141,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   }, [next]);
 
   const handlePlaybackError = useCallback(async () => {
-    const { currentTrack, streamInfo } = usePlayerStore.getState();
+    const { currentTrack } = usePlayerStore.getState();
 
     // Stream expiration recovery - re-fetch and resume
     if (currentTrack && retryCount.current < 3) {
@@ -149,14 +149,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       const currentTime = audioRef.current?.currentTime || 0;
 
       try {
-        const res = await fetch("/api/extract", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ videoId: currentTrack.videoId }),
-        });
+        const { clientExtract } = await import("@/lib/clientExtract");
+        const newStream = await clientExtract(currentTrack.videoId);
 
-        if (res.ok) {
-          const newStream = await res.json();
+        if (newStream) {
           usePlayerStore.getState().setStreamInfo(newStream);
 
           // Resume from position after new URL loads
@@ -258,20 +254,15 @@ export async function playTrack(track: Track, skipRadio = false) {
   setStatus("loading");
 
   try {
-    const res = await fetch("/api/extract", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ videoId: track.videoId }),
-    });
+    const { clientExtract } = await import("@/lib/clientExtract");
+    const stream = await clientExtract(track.videoId);
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      console.error("Extract failed:", err);
+    if (!stream) {
+      console.error("All extraction methods failed for:", track.videoId);
       setStatus("error");
       return;
     }
 
-    const stream = await res.json();
     setStreamInfo(stream);
 
     if (stream.duration && stream.duration > 0) {
