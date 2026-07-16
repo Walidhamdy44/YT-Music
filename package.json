@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
-    "@distube/ytdl-core": "^4.16.12",
     "@fontsource/inter": "^5.2.8",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

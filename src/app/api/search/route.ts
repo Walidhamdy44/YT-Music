@@ -7,7 +7,7 @@ async function getInnertube() {
   if (!innertube) {
     innertube = await Innertube.create({
       lang: "en",
-      location: "US",
+      location: "EG",
     });
   }
   return innertube;

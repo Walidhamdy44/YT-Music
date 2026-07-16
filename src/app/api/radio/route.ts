@@ -5,7 +5,7 @@ let innertube: Innertube | null = null;
 
 async function getInnertube() {
   if (!innertube) {
-    innertube = await Innertube.create({ lang: "en", location: "US" });
+    innertube = await Innertube.create({ lang: "en", location: "EG" });
   }
   return innertube;
 }
