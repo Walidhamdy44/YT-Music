@@ -1,0 +1,2 @@
+Replace these with actual 192x192 and 512x512 PNG icons for the PWA.
+Generate from the YT Music logo or any music-themed icon.
