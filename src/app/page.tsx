@@ -37,6 +37,13 @@ const BROWSE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 // Cache for home sections (mixes, etc.)
 let homeSectionsCache: { data: HomeSection[]; fetchedAt: number } | null = null;
 
+function getGreeting() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
+
 const moodChips = ["Energize", "Feel good", "Relax", "Workout", "Party", "Commute", "Focus", "Romance", "Sad", "Sleep"];
 
 export default function HomePage() {

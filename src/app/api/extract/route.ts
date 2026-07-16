@@ -1,21 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { exec } from "child_process";
 import { promisify } from "util";
-import { Innertube } from "youtubei.js";
 
 const execAsync = promisify(exec);
 
-let innertube: Innertube | null = null;
-
-async function getInnertube() {
-  if (!innertube) {
-    innertube = await Innertube.create({ lang: "en", location: "US" });
-  }
-  return innertube;
-}
-
-// Cache extracted URLs to avoid re-extracting for the same track
+// Cache extracted URLs to avoid re-running yt-dlp for the same track
 const urlCache = new Map<string, { url: string; expiresAt: number; title: string; artist: string; duration: number; thumbnail: string }>();
+
+// Clean expired cache entries every 30 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of urlCache.entries()) {
+    if (value.expiresAt < now) {
+      urlCache.delete(key);
+    }
+  }
+}, 30 * 60 * 1000);
 
 export async function POST(request: NextRequest) {
   try {
@@ -54,157 +54,63 @@ export async function POST(request: NextRequest) {
 
     const ytUrl = `https://music.youtube.com/watch?v=${videoId}`;
 
-    // Method 1: Try yt-dlp (works locally where it's installed)
-    try {
-      const [urlResult, infoResult] = await Promise.allSettled([
-        execAsync(
-          `yt-dlp -f "bestaudio[ext=m4a]/bestaudio/best" -g --no-warnings --no-check-certificates "${ytUrl}"`,
-          { timeout: 15000 }
-        ),
-        execAsync(
-          `yt-dlp -j --no-warnings --no-check-certificates "${ytUrl}"`,
-          { timeout: 15000 }
-        ),
-      ]);
+    // Run URL extraction and metadata fetch in parallel for speed
+    const [urlResult, infoResult] = await Promise.allSettled([
+      execAsync(
+        `yt-dlp -f "bestaudio[ext=m4a]/bestaudio/best" -g --no-warnings --no-check-certificates "${ytUrl}"`,
+        { timeout: 15000 }
+      ),
+      execAsync(
+        `yt-dlp -j --no-warnings --no-check-certificates "${ytUrl}"`,
+        { timeout: 15000 }
+      ),
+    ]);
 
-      if (urlResult.status === "fulfilled" && urlResult.value.stdout.trim()) {
-        const streamUrl = urlResult.value.stdout.trim();
-
-        let title = "";
-        let artist = "";
-        let duration = 0;
-        let thumbnail = "";
-
-        if (infoResult.status === "fulfilled") {
-          try {
-            const info = JSON.parse(infoResult.value.stdout);
-            title = info.title || "";
-            artist = info.artist || info.uploader || info.channel || "";
-            duration = info.duration || 0;
-            thumbnail =
-              info.thumbnail ||
-              info.thumbnails?.[info.thumbnails.length - 1]?.url ||
-              "";
-          } catch {
-            // JSON parse failed, ignore
-          }
-        }
-
-        const expiresAt = Date.now() + 4 * 60 * 60 * 1000;
-        urlCache.set(videoId, { url: streamUrl, expiresAt, title, artist, duration, thumbnail });
-
-        return NextResponse.json({
-          url: streamUrl,
-          mimeType: "audio/mp4",
-          bitrate: 128000,
-          duration,
-          expiresAt,
-          videoId,
-          title,
-          artist,
-          thumbnail,
-          cached: false,
-          client: "yt-dlp",
-        });
-      }
-    } catch {
-      // yt-dlp not available (e.g., on Vercel), fall through to next method
+    if (urlResult.status !== "fulfilled" || !urlResult.value.stdout.trim()) {
+      return NextResponse.json(
+        { error: "Could not extract stream URL" },
+        { status: 404 }
+      );
     }
 
-    // Method 2: Try youtubei.js (works if YouTube doesn't block the IP)
-    try {
-      const yt = await getInnertube();
-      const info = await yt.music.getInfo(videoId);
+    const streamUrl = urlResult.value.stdout.trim();
 
-      if (info?.streaming_data) {
-        const format = info.chooseFormat({ type: "audio", quality: "best" });
-        if (format) {
-          const streamUrl = await format.decipher(yt.session.player);
-          if (streamUrl) {
-            const title = info.basic_info?.title || "";
-            const artist = info.basic_info?.author || "";
-            const duration = info.basic_info?.duration || 0;
-            const thumbnail =
-              info.basic_info?.thumbnail?.[info.basic_info.thumbnail.length - 1]?.url ||
-              info.basic_info?.thumbnail?.[0]?.url ||
-              "";
+    let title = "";
+    let artist = "";
+    let duration = 0;
+    let thumbnail = "";
 
-            const expiresAt = Date.now() + 4 * 60 * 60 * 1000;
-            urlCache.set(videoId, { url: streamUrl, expiresAt, title, artist, duration, thumbnail });
-
-            return NextResponse.json({
-              url: streamUrl,
-              mimeType: format.mime_type || "audio/mp4",
-              bitrate: format.bitrate || 128000,
-              duration,
-              expiresAt,
-              videoId,
-              title,
-              artist,
-              thumbnail,
-              cached: false,
-              client: "youtubei",
-            });
-          }
-        }
-      }
-    } catch (e) {
-      console.log("youtubei.js failed:", e instanceof Error ? e.message : e);
-      innertube = null;
-    }
-
-    // Method 3: Try Piped API instances as last resort
-    const pipedInstances = [
-      `https://pipedapi.kavin.rocks/streams/${videoId}`,
-      `https://api.piped.yt/streams/${videoId}`,
-      `https://piped-api.lunar.icu/streams/${videoId}`,
-    ];
-
-    for (const pipedUrl of pipedInstances) {
+    if (infoResult.status === "fulfilled") {
       try {
-        const res = await fetch(pipedUrl, { signal: AbortSignal.timeout(8000) });
-        if (!res.ok) continue;
-
-        const data = await res.json();
-        const audioStreams = data.audioStreams || [];
-        const bestAudio = audioStreams
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          .filter((s: any) => s.mimeType?.includes("audio"))
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
-
-        if (bestAudio?.url) {
-          const title = data.title || "";
-          const artist = (data.uploader || "").replace(" - Topic", "");
-          const duration = data.duration || 0;
-          const thumbnail = data.thumbnailUrl || "";
-
-          const expiresAt = Date.now() + 4 * 60 * 60 * 1000;
-          urlCache.set(videoId, { url: bestAudio.url, expiresAt, title, artist, duration, thumbnail });
-
-          return NextResponse.json({
-            url: bestAudio.url,
-            mimeType: bestAudio.mimeType || "audio/mp4",
-            bitrate: bestAudio.bitrate || 128000,
-            duration,
-            expiresAt,
-            videoId,
-            title,
-            artist,
-            thumbnail,
-            cached: false,
-            client: "piped",
-          });
-        }
+        const info = JSON.parse(infoResult.value.stdout);
+        title = info.title || "";
+        artist = info.artist || info.uploader || info.channel || "";
+        duration = info.duration || 0;
+        thumbnail =
+          info.thumbnail ||
+          info.thumbnails?.[info.thumbnails.length - 1]?.url ||
+          "";
       } catch {
-        continue;
+        // JSON parse failed, ignore
       }
     }
 
-    return NextResponse.json(
-      { error: "Could not extract stream URL", details: "All methods failed" },
-      { status: 503 }
-    );
+    // Cache for 4 hours (URLs typically last 6 hours)
+    const expiresAt = Date.now() + 4 * 60 * 60 * 1000;
+    urlCache.set(videoId, { url: streamUrl, expiresAt, title, artist, duration, thumbnail });
+
+    return NextResponse.json({
+      url: streamUrl,
+      mimeType: "audio/mp4",
+      bitrate: 128000,
+      duration,
+      expiresAt,
+      videoId,
+      title,
+      artist,
+      thumbnail,
+      cached: false,
+    });
   } catch (error: unknown) {
     console.error("Extract error:", error);
     const message = error instanceof Error ? error.message : "Unknown error";
