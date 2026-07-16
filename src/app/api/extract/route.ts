@@ -1,21 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
-import { exec } from "child_process";
-import { promisify } from "util";
+import { Innertube } from "youtubei.js";
 
-const execAsync = promisify(exec);
+let innertube: Innertube | null = null;
 
-// Cache extracted URLs to avoid re-running yt-dlp for the same track
-const urlCache = new Map<string, { url: string; expiresAt: number; title: string; artist: string; duration: number; thumbnail: string }>();
-
-// Clean expired cache entries every 30 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, value] of urlCache.entries()) {
-    if (value.expiresAt < now) {
-      urlCache.delete(key);
-    }
+async function getInnertube() {
+  if (!innertube) {
+    innertube = await Innertube.create({ lang: "en", location: "US" });
   }
-}, 30 * 60 * 1000);
+  return innertube;
+}
+
+// In-memory cache for extracted URLs
+const urlCache = new Map<
+  string,
+  { url: string; expiresAt: number; title: string; artist: string; duration: number; thumbnail: string }
+>();
 
 export async function POST(request: NextRequest) {
   try {
@@ -52,48 +51,49 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const ytUrl = `https://music.youtube.com/watch?v=${videoId}`;
+    const yt = await getInnertube();
 
-    // Run URL extraction and metadata fetch in parallel for speed
-    const [urlResult, infoResult] = await Promise.allSettled([
-      execAsync(
-        `yt-dlp -f "bestaudio[ext=m4a]/bestaudio/best" -g --no-warnings --no-check-certificates "${ytUrl}"`,
-        { timeout: 15000 }
-      ),
-      execAsync(
-        `yt-dlp -j --no-warnings --no-check-certificates "${ytUrl}"`,
-        { timeout: 15000 }
-      ),
-    ]);
+    // Get track info using youtubei.js
+    const info = await yt.music.getInfo(videoId);
 
-    if (urlResult.status !== "fulfilled" || !urlResult.value.stdout.trim()) {
+    if (!info) {
+      return NextResponse.json(
+        { error: "Could not fetch track info" },
+        { status: 404 }
+      );
+    }
+
+    // Choose the best audio format
+    const format = info.chooseFormat({
+      type: "audio",
+      quality: "best",
+    });
+
+    if (!format) {
       return NextResponse.json(
         { error: "Could not extract stream URL" },
         { status: 404 }
       );
     }
 
-    const streamUrl = urlResult.value.stdout.trim();
+    // Get the streaming URL
+    const streamUrl = await format.decipher(yt.session.player);
 
-    let title = "";
-    let artist = "";
-    let duration = 0;
-    let thumbnail = "";
-
-    if (infoResult.status === "fulfilled") {
-      try {
-        const info = JSON.parse(infoResult.value.stdout);
-        title = info.title || "";
-        artist = info.artist || info.uploader || info.channel || "";
-        duration = info.duration || 0;
-        thumbnail =
-          info.thumbnail ||
-          info.thumbnails?.[info.thumbnails.length - 1]?.url ||
-          "";
-      } catch {
-        // JSON parse failed, ignore
-      }
+    if (!streamUrl) {
+      return NextResponse.json(
+        { error: "Could not decipher stream URL" },
+        { status: 404 }
+      );
     }
+
+    // Extract metadata
+    const title = info.basic_info?.title || "";
+    const artist = info.basic_info?.author || "";
+    const duration = info.basic_info?.duration || 0;
+    const thumbnail =
+      info.basic_info?.thumbnail?.[info.basic_info.thumbnail.length - 1]?.url ||
+      info.basic_info?.thumbnail?.[0]?.url ||
+      "";
 
     // Cache for 4 hours (URLs typically last 6 hours)
     const expiresAt = Date.now() + 4 * 60 * 60 * 1000;
@@ -101,8 +101,8 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       url: streamUrl,
-      mimeType: "audio/mp4",
-      bitrate: 128000,
+      mimeType: format.mime_type || "audio/mp4",
+      bitrate: format.bitrate || 128000,
       duration,
       expiresAt,
       videoId,
@@ -113,6 +113,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (error: unknown) {
     console.error("Extract error:", error);
+    innertube = null; // Reset on error
     const message = error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json(
       { error: "Failed to extract stream", details: message },
