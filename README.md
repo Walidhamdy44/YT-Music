@@ -3,7 +3,6 @@
 A personal-use YouTube Music web client built with Next.js. Streams music from YouTube, supports playlists, search, and works as an installable PWA.
 
 ## Features
-
 - **Music Streaming** — Stream audio from YouTube via `youtubei.js`
 - **Search** — Search for tracks, albums, artists, and playlists
 - **Home Feed** — Personalized home sections and browse content
