@@ -53,8 +53,8 @@ export async function POST(request: NextRequest) {
 
     const yt = await getInnertube();
 
-    // Try multiple clients in order of likelihood to work
-    const clients = ["YTMUSIC", "WEB", "ANDROID"] as const;
+    // Try multiple clients — some work better from server IPs
+    const clients = ["WEB_EMBEDDED", "YTMUSIC", "WEB", "ANDROID", "IOS"] as const;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let info: any = null;
     let usedClient = "";
@@ -71,16 +71,65 @@ export async function POST(request: NextRequest) {
           break;
         }
       } catch (e) {
-        console.log(`Client ${client} failed for ${videoId}:`, e instanceof Error ? e.message : e);
+        console.log(`Client ${client} failed for ${videoId}:`, e instanceof Error ? e.message : "");
         continue;
       }
     }
 
     if (!info?.streaming_data) {
-      return NextResponse.json(
-        { error: "Streaming data not available", details: "All clients failed to get streaming data" },
-        { status: 404 }
-      );
+      // Fallback: try multiple Piped/Invidious API instances
+      const proxyInstances = [
+        { url: `https://pipedapi.kavin.rocks/streams/${videoId}`, type: "piped" },
+        { url: `https://pipedapi.adminforge.de/streams/${videoId}`, type: "piped" },
+        { url: `https://api.piped.yt/streams/${videoId}`, type: "piped" },
+        { url: `https://piped-api.lunar.icu/streams/${videoId}`, type: "piped" },
+      ];
+
+      for (const instance of proxyInstances) {
+        try {
+          const proxyRes = await fetch(instance.url, { signal: AbortSignal.timeout(8000) });
+          if (!proxyRes.ok) continue;
+          const proxyData = await proxyRes.json();
+
+          const audioStreams = proxyData.audioStreams || [];
+          const bestAudio = audioStreams
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .filter((s: any) => s.mimeType?.includes("audio"))
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+
+          if (bestAudio?.url) {
+            const title = proxyData.title || "";
+            const artist = (proxyData.uploader || "").replace(" - Topic", "");
+            const duration = proxyData.duration || 0;
+            const thumbnail = proxyData.thumbnailUrl || "";
+
+            const expiresAt = Date.now() + 4 * 60 * 60 * 1000;
+            urlCache.set(videoId, { url: bestAudio.url, expiresAt, title, artist, duration, thumbnail });
+
+            return NextResponse.json({
+              url: bestAudio.url,
+              mimeType: bestAudio.mimeType || "audio/mp4",
+              bitrate: bestAudio.bitrate || 128000,
+              duration,
+              expiresAt,
+              videoId,
+              title,
+              artist,
+              thumbnail,
+              cached: false,
+              client: "piped",
+            });
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      return NextResponse.json({
+        error: "Streaming data not available",
+        details: "All extraction methods failed. YouTube blocks server-side requests from cloud providers.",
+      }, { status: 503 });
     }
 
     // Choose the best audio format
@@ -88,7 +137,6 @@ export async function POST(request: NextRequest) {
     try {
       format = info.chooseFormat({ type: "audio", quality: "best" });
     } catch {
-      // If no audio-only format, try any format
       try {
         format = info.chooseFormat({ quality: "best" });
       } catch {
