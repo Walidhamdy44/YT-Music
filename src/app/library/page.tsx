@@ -8,7 +8,7 @@ import Link from "next/link";
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { Track } from "@/types";
 
-const tabs = ["Playlists", "Liked Songs", "Local Playlists"];
+const tabs = ["Playlists", "Liked Songs", "Saved", "Local Playlists"];
 
 interface YTPlaylist {
   id: string;
@@ -20,7 +20,7 @@ interface YTPlaylist {
 
 export default function LibraryPage() {
   const { data: session } = useSession();
-  const { playlists: localPlaylists, likedTracks, createPlaylist } = useLibraryStore();
+  const { playlists: localPlaylists, likedTracks, savedTracks, createPlaylist } = useLibraryStore();
   const [activeTab, setActiveTab] = useState("Playlists");
   const [ytPlaylists, setYtPlaylists] = useState<YTPlaylist[]>([]);
   const [ytLikedSongs, setYtLikedSongs] = useState<Track[]>([]);
@@ -280,6 +280,27 @@ export default function LibraryPage() {
                 <p className="text-[14px] mt-1">
                   {session ? "Your YouTube Music liked songs will appear here" : "Sign in to see liked songs"}
                 </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === "Saved" && (
+          <div className="flex flex-col gap-1">
+            {savedTracks.length > 0 ? (
+              savedTracks.map((track, i) => (
+                <TrackRow
+                  key={`saved-${track.videoId}-${i}`}
+                  track={track}
+                  tracks={savedTracks}
+                  index={i}
+                />
+              ))
+            ) : (
+              <div className="flex flex-col items-center justify-center py-16 text-on-surface-variant">
+                <span className="material-symbols-outlined text-[48px] mb-4">bookmark_border</span>
+                <p className="text-[16px]">No saved songs yet</p>
+                <p className="text-[14px] mt-1">Tap the bookmark icon on any song to save it here</p>
               </div>
             )}
           </div>

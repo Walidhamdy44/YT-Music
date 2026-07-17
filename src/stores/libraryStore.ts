@@ -5,6 +5,7 @@ import type { Playlist, Track } from "@/types";
 interface LibraryState {
   playlists: Playlist[];
   likedTracks: Track[];
+  savedTracks: Track[];
 
   // Actions
   createPlaylist: (title: string, description?: string) => Playlist;
@@ -19,6 +20,8 @@ interface LibraryState {
   ) => void;
   toggleLikeTrack: (track: Track) => void;
   isTrackLiked: (trackId: string) => boolean;
+  toggleSaveTrack: (track: Track) => void;
+  isTrackSaved: (trackId: string) => boolean;
 }
 
 export const useLibraryStore = create<LibraryState>()(
@@ -26,6 +29,7 @@ export const useLibraryStore = create<LibraryState>()(
     (set, get) => ({
       playlists: [],
       likedTracks: [],
+      savedTracks: [],
 
       createPlaylist: (title, description) => {
         const newPlaylist: Playlist = {
@@ -107,6 +111,20 @@ export const useLibraryStore = create<LibraryState>()(
 
       isTrackLiked: (trackId) => {
         return get().likedTracks.some((t) => t.id === trackId);
+      },
+
+      toggleSaveTrack: (track) =>
+        set((state) => {
+          const isSaved = state.savedTracks.some((t) => t.videoId === track.videoId);
+          return {
+            savedTracks: isSaved
+              ? state.savedTracks.filter((t) => t.videoId !== track.videoId)
+              : [track, ...state.savedTracks],
+          };
+        }),
+
+      isTrackSaved: (trackId) => {
+        return get().savedTracks.some((t) => t.videoId === trackId || t.id === trackId);
       },
     }),
     {
