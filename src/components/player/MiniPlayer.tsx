@@ -2,9 +2,11 @@
 
 import { usePlayerStore } from "@/stores/playerStore";
 import { useQueueStore } from "@/stores/queueStore";
+import { useLibraryStore } from "@/stores/libraryStore";
 import { playTrack, togglePlayback, seekTo, handleShuffle } from "./PlayerProvider";
 import { useUIStore } from "@/stores/uiStore";
 import { formatTime } from "@/lib/utils";
+import { useState, useEffect } from "react";
 
 export function MiniPlayer() {
   const { currentTrack, status, currentTime, duration, volume, isMuted, isShuffled, repeatMode } =
@@ -12,11 +14,34 @@ export function MiniPlayer() {
   const { next, previous } = useQueueStore();
   const { setFullscreenPlayer } = useUIStore();
   const { setVolume, toggleMute, toggleShuffle: _, cycleRepeatMode } = usePlayerStore();
+  const { toggleSaveTrack, isTrackSaved } = useLibraryStore();
+  const [rating, setRating] = useState<"like" | "dislike" | "none">("none");
+
+  // Fetch rating when track changes
+  useEffect(() => {
+    if (!currentTrack?.videoId) return;
+    setRating("none");
+    fetch(`/api/rate?videoId=${currentTrack.videoId}`)
+      .then(r => r.ok ? r.json() : { rating: "none" })
+      .then(d => setRating(d.rating || "none"))
+      .catch(() => {});
+  }, [currentTrack?.videoId]);
 
   if (!currentTrack) return null;
 
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
   const isLoading = status === "loading";
+  const saved = isTrackSaved(currentTrack.videoId);
+
+  const handleRate = async (newRating: "like" | "dislike") => {
+    const finalRating = rating === newRating ? "none" : newRating;
+    setRating(finalRating);
+    fetch("/api/rate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ videoId: currentTrack.videoId, rating: finalRating }),
+    }).catch(() => {});
+  };
 
   const handleNext = () => {
     const nextTrack = next();
@@ -91,9 +116,26 @@ export function MiniPlayer() {
               {isLoading ? "Loading..." : currentTrack.artist}
             </p>
           </div>
-          <button className="text-on-surface-variant hover:text-primary ml-2 hidden sm:block">
-            <span className="material-symbols-outlined">favorite</span>
-          </button>
+          <div className="flex items-center gap-1 ml-2 hidden sm:flex">
+            <button
+              onClick={() => handleRate("like")}
+              className={`p-1 transition-colors ${rating === "like" ? "text-primary" : "text-on-surface-variant hover:text-on-surface"}`}
+              title="Like"
+            >
+              <span className="material-symbols-outlined text-[20px]" style={rating === "like" ? { fontVariationSettings: "'FILL' 1" } : undefined}>
+                thumb_up
+              </span>
+            </button>
+            <button
+              onClick={() => handleRate("dislike")}
+              className={`p-1 transition-colors ${rating === "dislike" ? "text-primary" : "text-on-surface-variant hover:text-on-surface"}`}
+              title="Dislike"
+            >
+              <span className="material-symbols-outlined text-[20px]" style={rating === "dislike" ? { fontVariationSettings: "'FILL' 1" } : undefined}>
+                thumb_down
+              </span>
+            </button>
+          </div>
         </div>
 
         {/* Player Controls */}
@@ -149,8 +191,8 @@ export function MiniPlayer() {
           </button>
         </div>
 
-        {/* Volume & Time */}
-        <div className="flex items-center justify-end gap-4 w-1/3 hidden md:flex">
+        {/* Volume & Time — Desktop: slider, Mobile: +/- buttons */}
+        <div className="hidden md:flex items-center justify-end gap-4 w-1/3">
           <span className="text-[14px] leading-[20px] text-on-surface-variant tabular-nums">
             {isLoading ? "--:-- / --:--" : `${formatTime(currentTime)} / ${formatTime(duration)}`}
           </span>
@@ -171,6 +213,21 @@ export function MiniPlayer() {
             onChange={(e) => setVolume(parseFloat(e.target.value))}
             className="w-24 h-1 bg-surface-container-highest rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-on-surface-variant hover:[&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:transition-colors"
           />
+        </div>
+        {/* Mobile volume buttons */}
+        <div className="flex md:hidden items-center gap-1">
+          <button
+            onClick={() => setVolume(Math.max(0, volume - 0.1))}
+            className="text-on-surface-variant hover:text-on-surface p-1"
+          >
+            <span className="material-symbols-outlined text-[22px]">volume_down</span>
+          </button>
+          <button
+            onClick={() => setVolume(Math.min(1, volume + 0.1))}
+            className="text-on-surface-variant hover:text-on-surface p-1"
+          >
+            <span className="material-symbols-outlined text-[22px]">volume_up</span>
+          </button>
         </div>
       </div>
     </div>

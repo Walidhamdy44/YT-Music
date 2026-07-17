@@ -13,7 +13,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <PlayerProvider>
         <div className="flex h-screen overflow-hidden text-on-surface">
           <Sidebar />
-          <main className="flex-1 ml-0 md:ml-[240px] pb-24 md:pb-20 overflow-y-auto h-full relative">
+          <main className="flex-1 ml-0 md:ml-[240px] pb-40 md:pb-24 overflow-y-auto h-full relative">
             {children}
           </main>
           <MiniPlayer />
