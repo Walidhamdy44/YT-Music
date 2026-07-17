@@ -25,6 +25,7 @@ export function getAudioElement(): HTMLAudioElement | null {
 
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const playerContainerRef = useRef<HTMLDivElement | null>(null);
+  const silentAudioRef = useRef<HTMLAudioElement | null>(null);
   const {
     currentTrack,
     status,
@@ -36,6 +37,34 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     setStatus,
   } = usePlayerStore();
   const { next } = useQueueStore();
+
+  // Silent audio element to keep the audio session alive in background.
+  // Without this, Chrome on mobile pauses the YouTube IFrame when the screen is off.
+  useEffect(() => {
+    // Create a tiny silent audio context to maintain audio focus
+    const audio = new Audio();
+    audio.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
+    audio.loop = true;
+    audio.volume = 0.01; // Nearly silent
+    silentAudioRef.current = audio;
+
+    return () => {
+      audio.pause();
+      audio.src = "";
+    };
+  }, []);
+
+  // Start/stop silent audio based on playback status
+  useEffect(() => {
+    const audio = silentAudioRef.current;
+    if (!audio) return;
+
+    if (status === "playing") {
+      audio.play().catch(() => {});
+    } else {
+      audio.pause();
+    }
+  }, [status]);
 
   // Load YouTube IFrame API script
   useEffect(() => {
@@ -55,8 +84,28 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     script.async = true;
     document.head.appendChild(script);
 
+    // Handle page visibility change — resume playback if paused by browser
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && ytPlayer) {
+        const { status } = usePlayerStore.getState();
+        if (status === "playing") {
+          try {
+            const state = ytPlayer.getPlayerState();
+            if (state === window.YT.PlayerState.PAUSED) {
+              ytPlayer.playVideo();
+            }
+          } catch {
+            // Player not ready
+          }
+        }
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
     return () => {
       if (timeUpdateInterval) clearInterval(timeUpdateInterval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
 
@@ -75,6 +124,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         modestbranding: 1,
         rel: 0,
         showinfo: 0,
+        playsinline: 1,
         origin: window.location.origin,
       },
       events: {
@@ -205,7 +255,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   }, [status]);
 
-  // Media Session API
+  // Media Session API — enables lock screen controls and background audio
   useEffect(() => {
     if (!("mediaSession" in navigator) || !currentTrack) return;
 
@@ -214,7 +264,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       artist: currentTrack.artist,
       album: currentTrack.album || "",
       artwork: currentTrack.thumbnail
-        ? [{ src: currentTrack.thumbnailLarge || currentTrack.thumbnail, sizes: "512x512", type: "image/jpeg" }]
+        ? [
+            { src: currentTrack.thumbnailLarge || currentTrack.thumbnail, sizes: "512x512", type: "image/jpeg" },
+            { src: currentTrack.thumbnail, sizes: "96x96", type: "image/jpeg" },
+          ]
         : [],
     });
 
@@ -235,9 +288,54 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     navigator.mediaSession.setActionHandler("seekto", (details) => {
       if (ytPlayer && details.seekTime != null) {
         ytPlayer.seekTo(details.seekTime, true);
+        usePlayerStore.getState().setCurrentTime(details.seekTime);
+      }
+    });
+    navigator.mediaSession.setActionHandler("seekbackward", (details) => {
+      if (ytPlayer) {
+        const skipTime = details.seekOffset || 10;
+        const newTime = Math.max(0, ytPlayer.getCurrentTime() - skipTime);
+        ytPlayer.seekTo(newTime, true);
+      }
+    });
+    navigator.mediaSession.setActionHandler("seekforward", (details) => {
+      if (ytPlayer) {
+        const skipTime = details.seekOffset || 10;
+        const dur = ytPlayer.getDuration() || 0;
+        const newTime = Math.min(dur, ytPlayer.getCurrentTime() + skipTime);
+        ytPlayer.seekTo(newTime, true);
       }
     });
   }, [currentTrack]);
+
+  // Update Media Session position state for lock screen progress bar
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    const { currentTime, duration } = usePlayerStore.getState();
+    if (duration > 0) {
+      try {
+        navigator.mediaSession.setPositionState({
+          duration,
+          playbackRate: 1,
+          position: Math.min(currentTime, duration),
+        });
+      } catch {
+        // Some browsers don't support setPositionState
+      }
+    }
+  });
+
+  // Set playback state on media session
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    if (status === "playing") {
+      navigator.mediaSession.playbackState = "playing";
+    } else if (status === "paused") {
+      navigator.mediaSession.playbackState = "paused";
+    } else {
+      navigator.mediaSession.playbackState = "none";
+    }
+  }, [status]);
 
   return (
     <>
