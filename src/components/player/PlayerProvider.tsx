@@ -5,9 +5,8 @@ import { usePlayerStore } from "@/stores/playerStore";
 import { useQueueStore } from "@/stores/queueStore";
 import type { Track } from "@/types";
 
-// Audio backend URL — set via env or defaults to localhost
-const AUDIO_BACKEND_URL =
-  process.env.NEXT_PUBLIC_AUDIO_BACKEND_URL || "http://localhost:8000";
+// Audio backend URL — use local API proxy to bypass ngrok warning
+const AUDIO_BACKEND_URL = "/api";
 
 // Global audio element ref (persists across renders)
 let audioElement: HTMLAudioElement | null = null;
