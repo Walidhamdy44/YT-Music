@@ -11,6 +11,8 @@ const AUDIO_BACKEND_URL =
 
 // Global audio element ref (persists across renders)
 let audioElement: HTMLAudioElement | null = null;
+// Track if we're seeking (to prevent loading state during seeks)
+let isSeeking = false;
 
 export function getAudioElement(): HTMLAudioElement | null {
   return audioElement;
@@ -45,10 +47,19 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       if (Number.isFinite(time)) {
         usePlayerStore.getState().setCurrentTime(time);
       }
+      // Also check duration in case it wasn't set before
+      const dur = audio.duration;
+      if (Number.isFinite(dur) && dur > 0) {
+        const stored = usePlayerStore.getState().duration;
+        if (stored !== dur) {
+          usePlayerStore.getState().setDuration(dur);
+        }
+      }
     };
 
     const handleDurationChange = () => {
       const dur = audio.duration;
+      console.log("[PlayerProvider] Duration changed:", dur);
       if (Number.isFinite(dur) && dur > 0) {
         usePlayerStore.getState().setDuration(dur);
       }
@@ -85,14 +96,31 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     };
 
     const handleWaiting = () => {
-      usePlayerStore.getState().setStatus("loading");
+      // Only show loading if we're not seeking (seeking has its own UI state)
+      if (!isSeeking) {
+        usePlayerStore.getState().setStatus("loading");
+      }
     };
 
     const handleCanPlay = () => {
       const state = usePlayerStore.getState();
+      isSeeking = false; // Reset seeking flag
       if (state.status === "loading") {
         // Auto-play when ready if we initiated a play
         audio.play().catch(() => {});
+      }
+    };
+
+    const handleSeeking = () => {
+      isSeeking = true;
+    };
+
+    const handleSeeked = () => {
+      isSeeking = false;
+      // Ensure we're in playing state after seek completes
+      const state = usePlayerStore.getState();
+      if (state.status === "loading" && !audio.paused) {
+        usePlayerStore.getState().setStatus("playing");
       }
     };
 
@@ -104,6 +132,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     audio.addEventListener("error", handleError);
     audio.addEventListener("waiting", handleWaiting);
     audio.addEventListener("canplay", handleCanPlay);
+    audio.addEventListener("seeking", handleSeeking);
+    audio.addEventListener("seeked", handleSeeked);
 
     return () => {
       audio.removeEventListener("timeupdate", handleTimeUpdate);
@@ -114,6 +144,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       audio.removeEventListener("error", handleError);
       audio.removeEventListener("waiting", handleWaiting);
       audio.removeEventListener("canplay", handleCanPlay);
+      audio.removeEventListener("seeking", handleSeeking);
+      audio.removeEventListener("seeked", handleSeeked);
     };
   }, []);
 
@@ -354,6 +386,7 @@ export function handleShuffle() {
 
 export function seekTo(time: number) {
   if (audioElement) {
+    isSeeking = true;
     audioElement.currentTime = time;
     usePlayerStore.getState().setCurrentTime(time);
   }
