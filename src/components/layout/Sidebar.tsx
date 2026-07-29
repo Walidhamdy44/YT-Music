@@ -71,6 +71,18 @@ export function Sidebar() {
       {/* Bottom Links */}
       <div className="px-4 mt-auto">
         <Link
+          href="/settings/storage"
+          className={cn(
+            "flex items-center gap-4 px-4 py-3 rounded-lg transition-all duration-200 ease-in-out",
+            pathname === "/settings/storage"
+              ? "text-primary bg-surface-container-highest"
+              : "text-on-surface-variant hover:bg-surface-container-high"
+          )}
+        >
+          <span className="material-symbols-outlined">download</span>
+          <span className="text-[14px] leading-[20px]">Offline Storage</span>
+        </Link>
+        <Link
           href="#"
           className="flex items-center gap-4 px-4 py-3 rounded-lg text-on-surface-variant hover:bg-surface-container-high transition-all duration-200 ease-in-out"
         >

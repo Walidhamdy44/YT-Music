@@ -3,17 +3,21 @@
 import { useEffect, useRef, useCallback } from "react";
 import { usePlayerStore } from "@/stores/playerStore";
 import { useQueueStore } from "@/stores/queueStore";
+import { useOfflineStore } from "@/stores/offlineStore";
+import { offlinePlaybackService } from "@/lib/offlinePlaybackService";
+import { cacheMetadataStore, CacheMetadataStore } from "@/lib/cacheMetadataStore";
 import type { Track } from "@/types";
 
 // Audio backend URL — use local API proxy to bypass ngrok warning
 const AUDIO_BACKEND_URL = "/api";
 
+// Track the current blob URL to revoke when changing tracks
+let currentBlobUrl: string | null = null;
+
 // Global audio element ref (persists across renders)
 let audioElement: HTMLAudioElement | null = null;
 // Track if we're seeking (to prevent loading state during seeks)
 let isSeeking = false;
-// Track if play was initiated by user (for iOS autoplay policy)
-let userInitiatedPlay = false;
 // Track retry attempts for iOS
 let playRetryCount = 0;
 const MAX_PLAY_RETRIES = 3;
@@ -34,6 +38,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   // Store handleTrackEnd in a ref so callbacks always use latest version
   const handleTrackEndRef = useRef(() => {});
+
+  // Initialize offline playback service
+  useEffect(() => {
+    initializeOfflinePlayback();
+  }, []);
 
   // Initialize audio element once
   useEffect(() => {
@@ -337,6 +346,31 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
 // --- Exported utility functions for playback control ---
 
+/**
+ * Initialize offline playback system
+ */
+async function initializeOfflinePlayback() {
+  try {
+    await offlinePlaybackService.init();
+    
+    // Load cached tracks into store
+    const cachedTracks = await offlinePlaybackService.getCachedTracks();
+    useOfflineStore.getState().setCachedTracks(cachedTracks);
+    useOfflineStore.getState().setInitialized(true);
+    
+    // Set up online/offline listeners
+    const handleOnline = () => useOfflineStore.getState().setOffline(false);
+    const handleOffline = () => useOfflineStore.getState().setOffline(true);
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    console.log(`[OfflinePlayback] Initialized with ${cachedTracks.length} cached tracks`);
+  } catch (e) {
+    console.warn('[OfflinePlayback] Initialization failed:', e);
+  }
+}
+
 export async function playTrack(track: Track, skipRadio = false) {
   const { setCurrentTrack, setStatus, setDuration, currentTrack } =
     usePlayerStore.getState();
@@ -362,16 +396,54 @@ export async function playTrack(track: Track, skipRadio = false) {
 
   // Reset retry count for new track
   playRetryCount = 0;
-  userInitiatedPlay = true;
+
+  // Revoke previous blob URL if exists
+  if (currentBlobUrl) {
+    offlinePlaybackService.revokeBlobUrl(currentBlobUrl);
+    currentBlobUrl = null;
+  }
 
   setCurrentTrack(track);
   setStatus("loading");
   setDuration(track.duration || 0);
 
-  // Set audio source to our backend redirect endpoint
+  // Check cache first, then fall back to network
+  let audioUrl: string;
+  let isFromCache = false;
+
+  try {
+    const audioSource = await offlinePlaybackService.getAudioUrl(track.videoId);
+    audioUrl = audioSource.url;
+    isFromCache = audioSource.isFromCache;
+    
+    if (isFromCache) {
+      currentBlobUrl = audioUrl; // Track for cleanup
+      console.log("[playTrack] Playing from cache:", track.videoId);
+    } else {
+      console.log("[playTrack] Playing from network:", track.videoId);
+    }
+  } catch (e) {
+    // Fallback to network URL
+    audioUrl = `${AUDIO_BACKEND_URL}/audio/${track.videoId}`;
+    console.log("[playTrack] Cache check failed, using network:", track.videoId);
+  }
+
+  // Check if offline and not cached
+  const isOffline = !navigator.onLine;
+  if (isOffline && !isFromCache) {
+    console.warn("[playTrack] Offline and not cached, cannot play:", track.videoId);
+    setStatus("error");
+    // Try next track
+    const nextTrack = useQueueStore.getState().next();
+    if (nextTrack) {
+      setTimeout(() => playTrack(nextTrack, true), 500);
+    }
+    return;
+  }
+
+  // Set audio source
   if (audioElement) {
-    const audioUrl = `${AUDIO_BACKEND_URL}/audio/${track.videoId}`;
-    console.log("[playTrack] Setting src:", audioUrl);
+    console.log("[playTrack] Setting src:", audioUrl.substring(0, 50) + "...");
     audioElement.src = audioUrl;
     audioElement.load();
     
@@ -384,7 +456,7 @@ export async function playTrack(track: Track, skipRadio = false) {
 
   // Set streamInfo for UI compatibility
   usePlayerStore.getState().setStreamInfo({
-    url: `${AUDIO_BACKEND_URL}/audio/${track.videoId}`,
+    url: audioUrl,
     mimeType: "audio/mp4",
     bitrate: 128000,
     duration: track.duration || 0,
@@ -392,13 +464,62 @@ export async function playTrack(track: Track, skipRadio = false) {
     videoId: track.videoId,
   });
 
+  // If played from network, cache in background after a delay
+  if (!isFromCache && !isOffline) {
+    cacheAudioInBackground(track);
+  }
+
   // Fetch radio queue in background
-  if (!skipRadio) {
+  if (!skipRadio && !isOffline) {
     const queue = useQueueStore.getState();
     const upcomingCount = queue.tracks.length - queue.currentIndex - 1;
     if (upcomingCount <= 2) {
       fetchRadioQueue(track.videoId);
     }
+  }
+}
+
+/**
+ * Cache audio in background after successful playback start
+ */
+async function cacheAudioInBackground(track: Track) {
+  // Wait a bit to ensure playback started successfully
+  await new Promise(resolve => setTimeout(resolve, 5000));
+  
+  // Check if we're still playing this track
+  const currentTrack = usePlayerStore.getState().currentTrack;
+  if (currentTrack?.videoId !== track.videoId) {
+    return; // User switched tracks, don't cache
+  }
+
+  // Check if already cached
+  const isCached = useOfflineStore.getState().isTrackCached(track.videoId);
+  if (isCached) {
+    return;
+  }
+
+  try {
+    console.log("[playTrack] Caching in background:", track.videoId);
+    
+    // Fetch the audio
+    const response = await fetch(`${AUDIO_BACKEND_URL}/audio/${track.videoId}`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const audioBlob = await response.blob();
+    
+    // Cache it
+    const success = await offlinePlaybackService.cachePlayedAudio(track, audioBlob);
+    
+    if (success) {
+      // Update store
+      const metadata = CacheMetadataStore.createMetadata(track, audioBlob.size, false);
+      useOfflineStore.getState().addCachedTrack(metadata);
+      console.log("[playTrack] Background cache complete:", track.videoId);
+    }
+  } catch (e) {
+    console.warn("[playTrack] Background caching failed:", e);
   }
 }
 

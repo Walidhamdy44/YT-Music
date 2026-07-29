@@ -5,6 +5,8 @@ import { playTrack } from "@/components/player/PlayerProvider";
 import { useQueueStore } from "@/stores/queueStore";
 import { usePlayerStore } from "@/stores/playerStore";
 import { formatTime } from "@/lib/utils";
+import { CacheStatusIndicator } from "./CacheStatusIndicator";
+import { DownloadButton } from "./DownloadButton";
 
 interface TrackRowProps {
   track: Track;
@@ -12,9 +14,10 @@ interface TrackRowProps {
   index?: number;
   showDuration?: boolean;
   showIndex?: boolean;
+  showCacheStatus?: boolean;
 }
 
-export function TrackRow({ track, tracks, index = 0, showDuration = true, showIndex = false }: TrackRowProps) {
+export function TrackRow({ track, tracks, index = 0, showDuration = true, showIndex = false, showCacheStatus = true }: TrackRowProps) {
   const { setQueue } = useQueueStore();
   const currentTrack = usePlayerStore((s) => s.currentTrack);
   const status = usePlayerStore((s) => s.status);
@@ -126,6 +129,13 @@ export function TrackRow({ track, tracks, index = 0, showDuration = true, showIn
         <span className="text-[14px] leading-[20px] text-on-surface-variant hidden md:block">
           {formatTime(track.duration)}
         </span>
+      )}
+
+      {/* Cache Status / Download Button */}
+      {showCacheStatus && (
+        <div className="hidden sm:block" onClick={(e) => e.stopPropagation()}>
+          <DownloadButton track={track} variant="icon" size="sm" />
+        </div>
       )}
 
       {/* More button */}
