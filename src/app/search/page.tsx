@@ -1,7 +1,8 @@
 "use client";
 
 import { useSearchParams, useRouter } from "next/navigation";
-import { useEffect, useState, Suspense } from "react";
+import { useEffect, useState, Suspense, useRef } from "react";
+import Link from "next/link";
 import { TrackRow } from "@/components/track/TrackRow";
 import { AlbumCard } from "@/components/track/AlbumCard";
 import { useUIStore } from "@/stores/uiStore";
@@ -27,14 +28,58 @@ function SearchContent() {
   const [results, setResults] = useState<SearchResults | null>(null);
   const [loading, setLoading] = useState(false);
   const [localQuery, setLocalQuery] = useState(query);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedSuggestion, setSelectedSuggestion] = useState(-1);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const suggestionsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (query) {
       setLocalQuery(query);
       setSearchQuery(query);
       performSearch(query);
+      setShowSuggestions(false);
     }
   }, [query]);
+
+  // Fetch suggestions as user types
+  useEffect(() => {
+    if (localQuery.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+
+    const timeout = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/search/suggestions?q=${encodeURIComponent(localQuery)}`);
+        if (res.ok) {
+          const data = await res.json();
+          setSuggestions(data.suggestions || []);
+        }
+      } catch {
+        // Ignore suggestion errors
+      }
+    }, 200);
+
+    return () => clearTimeout(timeout);
+  }, [localQuery]);
+
+  // Close suggestions on outside click
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (
+        suggestionsRef.current &&
+        !suggestionsRef.current.contains(e.target as Node) &&
+        inputRef.current &&
+        !inputRef.current.contains(e.target as Node)
+      ) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
 
   const performSearch = async (q: string) => {
     setLoading(true);
@@ -57,7 +102,32 @@ function SearchContent() {
     e.preventDefault();
     if (localQuery.trim()) {
       addToSearchHistory(localQuery.trim());
+      setShowSuggestions(false);
       router.push(`/search?q=${encodeURIComponent(localQuery.trim())}`);
+    }
+  };
+
+  const handleSuggestionClick = (suggestion: string) => {
+    setLocalQuery(suggestion);
+    addToSearchHistory(suggestion);
+    setShowSuggestions(false);
+    router.push(`/search?q=${encodeURIComponent(suggestion)}`);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!showSuggestions || suggestions.length === 0) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSelectedSuggestion((prev) => (prev < suggestions.length - 1 ? prev + 1 : prev));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSelectedSuggestion((prev) => (prev > 0 ? prev - 1 : -1));
+    } else if (e.key === "Enter" && selectedSuggestion >= 0) {
+      e.preventDefault();
+      handleSuggestionClick(suggestions[selectedSuggestion]);
+    } else if (e.key === "Escape") {
+      setShowSuggestions(false);
     }
   };
 
@@ -68,22 +138,60 @@ function SearchContent() {
     }
   };
 
+  const handleShuffleArtist = async (artistId: string) => {
+    try {
+      const res = await fetch(`/api/artist/${artistId}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.tracks && data.tracks.length > 0) {
+          const shuffled = [...data.tracks].sort(() => Math.random() - 0.5);
+          setQueue(shuffled, 0);
+          playTrack(shuffled[0]);
+        }
+      }
+    } catch {
+      // Ignore
+    }
+  };
+
+  const handlePlayArtist = async (artistId: string) => {
+    try {
+      const res = await fetch(`/api/artist/${artistId}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.tracks && data.tracks.length > 0) {
+          setQueue(data.tracks, 0);
+          playTrack(data.tracks[0]);
+        }
+      }
+    } catch {
+      // Ignore
+    }
+  };
+
   return (
     <div className="flex flex-col min-h-full">
       {/* Search Header */}
       <header className="sticky top-0 z-30 bg-background/80 backdrop-blur-md">
         <div className="flex justify-between items-center px-4 md:px-8 h-16 w-full">
-          <form onSubmit={handleSearch} className="flex-1 max-w-2xl">
+          <form onSubmit={handleSearch} className="flex-1 max-w-2xl relative">
             <div className="relative group">
               <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-on-surface-variant group-focus-within:text-primary transition-colors">
                 search
               </span>
               <input
+                ref={inputRef}
                 className="w-full bg-surface-container text-on-surface rounded-full py-3 pl-12 pr-12 border-none focus:ring-1 focus:ring-primary outline-none transition-all placeholder:text-on-surface-variant text-[16px] leading-[24px]"
                 placeholder="Search songs, albums, artists..."
                 type="text"
                 value={localQuery}
-                onChange={(e) => setLocalQuery(e.target.value)}
+                onChange={(e) => {
+                  setLocalQuery(e.target.value);
+                  setShowSuggestions(true);
+                  setSelectedSuggestion(-1);
+                }}
+                onFocus={() => setShowSuggestions(true)}
+                onKeyDown={handleKeyDown}
                 autoFocus
               />
               {localQuery && (
@@ -91,6 +199,7 @@ function SearchContent() {
                   type="button"
                   onClick={() => {
                     setLocalQuery("");
+                    setSuggestions([]);
                     router.push("/search");
                   }}
                   className="absolute right-4 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface transition-colors"
@@ -99,6 +208,30 @@ function SearchContent() {
                 </button>
               )}
             </div>
+
+            {/* Suggestions Dropdown */}
+            {showSuggestions && suggestions.length > 0 && (
+              <div
+                ref={suggestionsRef}
+                className="absolute top-full left-0 right-0 mt-2 bg-surface-container-high rounded-xl border border-outline-variant/20 shadow-[0_16px_32px_-8px_rgba(0,0,0,0.6)] overflow-hidden z-50"
+              >
+                {suggestions.map((suggestion, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => handleSuggestionClick(suggestion)}
+                    className={`w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-container-highest transition-colors ${
+                      selectedSuggestion === i ? "bg-surface-container-highest" : ""
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-[20px] text-on-surface-variant">
+                      search
+                    </span>
+                    <span className="text-[14px] text-on-surface">{suggestion}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </form>
         </div>
       </header>
@@ -148,7 +281,11 @@ function SearchContent() {
                     <h2 className="text-[24px] leading-[32px] font-bold tracking-tight text-on-surface">
                       Top Result
                     </h2>
-                    <TopResultCard artist={results.artists[0]} />
+                    <TopResultCard 
+                      artist={results.artists[0]} 
+                      onPlay={() => handlePlayArtist(results.artists[0].id)}
+                      onShuffle={() => handleShuffleArtist(results.artists[0].id)}
+                    />
                   </section>
                 )}
 
@@ -235,9 +372,14 @@ function SearchContent() {
   );
 }
 
-function TopResultCard({ artist }: { artist: Artist }) {
+function TopResultCard({ artist, onPlay, onShuffle }: { artist: Artist; onPlay: () => void; onShuffle: () => void }) {
+  const router = useRouter();
+  
   return (
-    <div className="group relative rounded-xl overflow-hidden bg-surface-container hover:bg-surface-container-high transition-all duration-300 p-6 flex flex-col gap-4 cursor-pointer hover:shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)]">
+    <div 
+      className="group relative rounded-xl overflow-hidden bg-surface-container hover:bg-surface-container-high transition-all duration-300 p-6 flex flex-col gap-4 cursor-pointer hover:shadow-[0_32px_64px_-12px_rgba(0,0,0,0.5)]"
+      onClick={() => router.push(`/artist/${artist.id}`)}
+    >
       <div className="w-32 h-32 rounded-full overflow-hidden self-center mb-2 shadow-xl ring-1 ring-white/5">
         {artist.thumbnail ? (
           <img alt={artist.name} className="w-full h-full object-cover" src={artist.thumbnail} />
@@ -254,12 +396,18 @@ function TopResultCard({ artist }: { artist: Artist }) {
         </p>
       </div>
       <div className="mt-4 flex gap-3 justify-center">
-        <button className="w-12 h-12 rounded-full bg-primary text-on-primary flex items-center justify-center hover:scale-105 transition-transform shadow-lg shadow-primary/20">
+        <button 
+          onClick={(e) => { e.stopPropagation(); onPlay(); }}
+          className="w-12 h-12 rounded-full bg-primary text-on-primary flex items-center justify-center hover:scale-105 transition-transform shadow-lg shadow-primary/20"
+        >
           <span className="material-symbols-outlined text-[28px]" style={{ fontVariationSettings: "'FILL' 1" }}>
             play_arrow
           </span>
         </button>
-        <button className="w-12 h-12 rounded-full border border-outline-variant text-on-surface flex items-center justify-center hover:bg-surface-container-highest transition-colors">
+        <button 
+          onClick={(e) => { e.stopPropagation(); onShuffle(); }}
+          className="w-12 h-12 rounded-full border border-outline-variant text-on-surface flex items-center justify-center hover:bg-surface-container-highest transition-colors"
+        >
           <span className="material-symbols-outlined">shuffle</span>
         </button>
       </div>
@@ -268,8 +416,13 @@ function TopResultCard({ artist }: { artist: Artist }) {
 }
 
 function ArtistCard({ artist }: { artist: Artist }) {
+  const router = useRouter();
+  
   return (
-    <div className="group flex flex-col items-center gap-3 cursor-pointer">
+    <div 
+      className="group flex flex-col items-center gap-3 cursor-pointer"
+      onClick={() => router.push(`/artist/${artist.id}`)}
+    >
       <div className="relative w-full aspect-square rounded-full overflow-hidden bg-surface-container-highest shadow-md group-hover:shadow-[0_16px_32px_-8px_rgba(0,0,0,0.6)] transition-all duration-300">
         {artist.thumbnail ? (
           <img alt={artist.name} className="w-full h-full object-cover" src={artist.thumbnail} />

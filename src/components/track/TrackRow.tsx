@@ -11,9 +11,10 @@ interface TrackRowProps {
   tracks?: Track[];
   index?: number;
   showDuration?: boolean;
+  showIndex?: boolean;
 }
 
-export function TrackRow({ track, tracks, index = 0, showDuration = true }: TrackRowProps) {
+export function TrackRow({ track, tracks, index = 0, showDuration = true, showIndex = false }: TrackRowProps) {
   const { setQueue } = useQueueStore();
   const currentTrack = usePlayerStore((s) => s.currentTrack);
   const status = usePlayerStore((s) => s.status);
@@ -46,6 +47,19 @@ export function TrackRow({ track, tracks, index = 0, showDuration = true }: Trac
         isCurrentTrack ? "bg-surface-container" : ""
       }`}
     >
+      {/* Index number */}
+      {showIndex && (
+        <span className="w-6 text-center text-[14px] text-on-surface-variant">
+          {isCurrentTrack ? (
+            <span className="material-symbols-outlined text-primary text-[18px]">
+              {isPlaying ? "equalizer" : "pause"}
+            </span>
+          ) : (
+            index + 1
+          )}
+        </span>
+      )}
+
       {/* Thumbnail */}
       <div className="relative w-12 h-12 rounded overflow-hidden flex-shrink-0">
         {track.thumbnail && !track.thumbnail.includes("/api/placeholder") ? (

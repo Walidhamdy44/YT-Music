@@ -152,6 +152,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
+    // Fires when playback actually starts (after buffering)
+    const handlePlaying = () => {
+      usePlayerStore.getState().setStatus("playing");
+    };
+
     const handleSeeking = () => {
       isSeeking = true;
     };
@@ -168,6 +173,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     audio.addEventListener("timeupdate", handleTimeUpdate);
     audio.addEventListener("durationchange", handleDurationChange);
     audio.addEventListener("play", handlePlay);
+    audio.addEventListener("playing", handlePlaying);
     audio.addEventListener("pause", handlePause);
     audio.addEventListener("ended", handleEnded);
     audio.addEventListener("error", handleError);
@@ -180,6 +186,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       audio.removeEventListener("timeupdate", handleTimeUpdate);
       audio.removeEventListener("durationchange", handleDurationChange);
       audio.removeEventListener("play", handlePlay);
+      audio.removeEventListener("playing", handlePlaying);
       audio.removeEventListener("pause", handlePause);
       audio.removeEventListener("ended", handleEnded);
       audio.removeEventListener("error", handleError);
