@@ -13,6 +13,11 @@ const AUDIO_BACKEND_URL =
 let audioElement: HTMLAudioElement | null = null;
 // Track if we're seeking (to prevent loading state during seeks)
 let isSeeking = false;
+// Track if play was initiated by user (for iOS autoplay policy)
+let userInitiatedPlay = false;
+// Track retry attempts for iOS
+let playRetryCount = 0;
+const MAX_PLAY_RETRIES = 3;
 
 export function getAudioElement(): HTMLAudioElement | null {
   return audioElement;
@@ -81,14 +86,51 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       handleTrackEndRef.current();
     };
 
-    const handleError = () => {
+    const handleError = (e: Event) => {
       const track = usePlayerStore.getState().currentTrack;
       if (!track) return;
 
-      console.error("Audio playback error for:", track.videoId);
-      // Auto-skip on error (region-restricted, unavailable, etc.)
+      const audio = e.target as HTMLAudioElement;
+      const error = audio.error;
+      
+      // Detailed error logging for debugging
+      console.error("[Audio Error]", {
+        videoId: track.videoId,
+        errorCode: error?.code,
+        errorMessage: error?.message,
+        networkState: audio.networkState,
+        readyState: audio.readyState,
+        src: audio.src,
+      });
+      
+      // Error codes:
+      // 1 = MEDIA_ERR_ABORTED
+      // 2 = MEDIA_ERR_NETWORK  
+      // 3 = MEDIA_ERR_DECODE
+      // 4 = MEDIA_ERR_SRC_NOT_SUPPORTED
+      
+      // On iOS/mobile, retry a few times (could be ngrok interstitial or network issue)
+      if (playRetryCount < MAX_PLAY_RETRIES) {
+        playRetryCount++;
+        console.log(`[Audio] Retrying playback (attempt ${playRetryCount}/${MAX_PLAY_RETRIES})...`);
+        setTimeout(() => {
+          if (audioElement && track.videoId) {
+            audioElement.load();
+            audioElement.play().catch((playError) => {
+              console.error("[Audio] Play retry failed:", playError);
+            });
+          }
+        }, 1000 * playRetryCount); // Increasing delay
+        return;
+      }
+      
+      // Reset retry count
+      playRetryCount = 0;
+      
+      // Auto-skip on persistent error
       const nextTrack = useQueueStore.getState().next();
       if (nextTrack) {
+        console.log("[Audio] Skipping to next track after error");
         playTrack(nextTrack, true);
       } else {
         usePlayerStore.getState().setStatus("error");
@@ -293,9 +335,11 @@ export async function playTrack(track: Track, skipRadio = false) {
   const { setCurrentTrack, setStatus, setDuration, currentTrack } =
     usePlayerStore.getState();
 
+  console.log("[playTrack] Starting:", track.videoId, track.title);
+
   // Validate videoId
   if (!track.videoId || !/^[a-zA-Z0-9_-]{11}$/.test(track.videoId)) {
-    console.warn("Invalid videoId, skipping:", track.videoId);
+    console.warn("[playTrack] Invalid videoId, skipping:", track.videoId);
     const nextTrack = useQueueStore.getState().next();
     if (nextTrack) playTrack(nextTrack, true);
     return;
@@ -304,10 +348,15 @@ export async function playTrack(track: Track, skipRadio = false) {
   // If same track and audio is just paused, resume
   if (currentTrack?.videoId === track.videoId && audioElement) {
     if (audioElement.paused && audioElement.src) {
-      audioElement.play().catch(() => {});
+      console.log("[playTrack] Resuming paused track");
+      audioElement.play().catch((e) => console.error("[playTrack] Resume failed:", e));
       return;
     }
   }
+
+  // Reset retry count for new track
+  playRetryCount = 0;
+  userInitiatedPlay = true;
 
   setCurrentTrack(track);
   setStatus("loading");
@@ -316,9 +365,15 @@ export async function playTrack(track: Track, skipRadio = false) {
   // Set audio source to our backend redirect endpoint
   if (audioElement) {
     const audioUrl = `${AUDIO_BACKEND_URL}/audio/${track.videoId}`;
+    console.log("[playTrack] Setting src:", audioUrl);
     audioElement.src = audioUrl;
     audioElement.load();
-    // Playback will start from the canplay handler
+    
+    // Try to play immediately (works if user gesture initiated this)
+    audioElement.play().catch((e) => {
+      console.log("[playTrack] Initial play() rejected (may need user gesture):", e.name);
+      // Don't treat as error - canplay handler will retry
+    });
   }
 
   // Set streamInfo for UI compatibility
