@@ -1,13 +1,17 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { HardDrive, Trash2, Search, CheckCircle2, AlertTriangle } from "lucide-react";
+import { HardDrive, Trash2, Search, CheckCircle2, AlertTriangle, Shuffle } from "lucide-react";
 import { useOfflineStore } from "@/stores/offlineStore";
 import { useStorageStats, useRefreshStorageStats } from "@/hooks/useStorageStats";
 import { storageManager, StorageManager } from "@/lib/storageManager";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useQueueStore } from "@/stores/queueStore";
+import { usePlayerStore } from "@/stores/playerStore";
+import { playTrack } from "@/components/player/PlayerProvider";
 import type { CachedTrackMetadata } from "@/lib/cacheMetadataStore";
+import type { Track } from "@/types";
 
 export function StorageDashboard() {
   const { used, quota, cachedCount, usedFormatted, quotaFormatted, percentUsed, isLow } = useStorageStats();
@@ -91,6 +95,36 @@ export function StorageDashboard() {
     return sum + (track?.fileSize || 0);
   }, 0);
 
+  // Shuffle play all cached songs
+  const shufflePlayAll = () => {
+    if (sortedTracks.length === 0) return;
+    
+    // Convert cached metadata to Track objects
+    const tracks: Track[] = sortedTracks.map((meta) => ({
+      id: meta.videoId,
+      videoId: meta.videoId,
+      title: meta.title,
+      artist: meta.artist,
+      thumbnail: meta.thumbnail,
+      duration: meta.duration,
+    }));
+
+    // Shuffle the tracks (Fisher-Yates shuffle)
+    const shuffled = [...tracks];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+
+    // Set queue and play first track
+    useQueueStore.getState().setQueue(shuffled, 0);
+    usePlayerStore.getState().toggleShuffle(); // Enable shuffle mode
+    if (!usePlayerStore.getState().isShuffled) {
+      usePlayerStore.getState().toggleShuffle();
+    }
+    playTrack(shuffled[0], true);
+  };
+
   return (
     <div className="max-w-3xl mx-auto p-6 space-y-6">
       <h1 className="text-2xl font-bold">Offline Storage</h1>
@@ -126,6 +160,18 @@ export function StorageDashboard() {
             <AlertTriangle size={16} />
             <span>Storage is running low. Consider removing some cached songs.</span>
           </div>
+        )}
+
+        {/* Shuffle Play Button */}
+        {cachedCount > 0 && (
+          <Button
+            onClick={shufflePlayAll}
+            className="w-full gap-2 mt-2"
+            size="lg"
+          >
+            <Shuffle size={20} />
+            Shuffle Play All ({cachedCount} songs)
+          </Button>
         )}
       </div>
 

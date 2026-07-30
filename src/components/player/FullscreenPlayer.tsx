@@ -100,8 +100,8 @@ export function FullscreenPlayer() {
 
   return (
     <div className="fixed inset-0 z-[100] bg-background flex flex-col animate-in slide-in-from-bottom duration-300">
-      {/* Top bar with tabs */}
-      <div className="flex items-center justify-between px-4 md:px-6 h-12 md:h-14 border-b border-outline-variant/10 flex-shrink-0">
+      {/* Top bar with tabs - add safe area padding for iOS notch */}
+      <div className="flex items-center justify-between px-4 md:px-6 h-12 md:h-14 pt-[env(safe-area-inset-top)] border-b border-outline-variant/10 flex-shrink-0">
         <button
           onClick={() => setFullscreenPlayer(false)}
           className="text-on-surface-variant hover:text-on-surface transition-colors p-1"
