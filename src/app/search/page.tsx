@@ -22,7 +22,7 @@ function SearchContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const query = searchParams.get("q") || "";
-  const { setSearchQuery, addToSearchHistory } = useUIStore();
+  const { setSearchQuery, addToSearchHistory, searchHistory, removeFromSearchHistory, clearSearchHistory } = useUIStore();
   const { setQueue } = useQueueStore();
   const [activeFilter, setActiveFilter] = useState("All");
   const [results, setResults] = useState<SearchResults | null>(null);
@@ -209,27 +209,80 @@ function SearchContent() {
               )}
             </div>
 
-            {/* Suggestions Dropdown */}
-            {showSuggestions && suggestions.length > 0 && (
+            {/* Suggestions / History Dropdown */}
+            {showSuggestions && (suggestions.length > 0 || (searchHistory.length > 0 && localQuery.length < 2)) && (
               <div
                 ref={suggestionsRef}
-                className="absolute top-full left-0 right-0 mt-2 bg-surface-container-high rounded-xl border border-outline-variant/20 shadow-[0_16px_32px_-8px_rgba(0,0,0,0.6)] overflow-hidden z-50"
+                className="absolute top-full left-0 right-0 mt-2 bg-surface-container-high rounded-xl border border-outline-variant/20 shadow-[0_16px_32px_-8px_rgba(0,0,0,0.6)] overflow-hidden z-50 max-h-[400px] overflow-y-auto"
               >
-                {suggestions.map((suggestion, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => handleSuggestionClick(suggestion)}
-                    className={`w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-container-highest transition-colors ${
-                      selectedSuggestion === i ? "bg-surface-container-highest" : ""
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-[20px] text-on-surface-variant">
-                      search
-                    </span>
-                    <span className="text-[14px] text-on-surface">{suggestion}</span>
-                  </button>
-                ))}
+                {/* Search History (show when input is empty or short) */}
+                {localQuery.length < 2 && searchHistory.length > 0 && (
+                  <>
+                    <div className="flex items-center justify-between px-4 py-2 border-b border-outline-variant/10">
+                      <span className="text-[12px] text-on-surface-variant font-medium uppercase tracking-wider">Recent searches</span>
+                      <button
+                        type="button"
+                        onClick={() => clearSearchHistory()}
+                        className="text-[12px] text-primary hover:text-primary/80 transition-colors"
+                      >
+                        Clear all
+                      </button>
+                    </div>
+                    {searchHistory.map((historyItem, i) => (
+                      <div
+                        key={`history-${i}`}
+                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-surface-container-highest transition-colors group"
+                      >
+                        <span className="material-symbols-outlined text-[20px] text-on-surface-variant">
+                          history
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleSuggestionClick(historyItem)}
+                          className="flex-1 text-left text-[14px] text-on-surface"
+                        >
+                          {historyItem}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeFromSearchHistory(historyItem);
+                          }}
+                          className="opacity-0 group-hover:opacity-100 text-on-surface-variant hover:text-on-surface transition-all p-1"
+                        >
+                          <span className="material-symbols-outlined text-[18px]">close</span>
+                        </button>
+                      </div>
+                    ))}
+                  </>
+                )}
+
+                {/* API Suggestions (show when typing) */}
+                {suggestions.length > 0 && (
+                  <>
+                    {localQuery.length >= 2 && searchHistory.length > 0 && (
+                      <div className="px-4 py-2 border-b border-outline-variant/10">
+                        <span className="text-[12px] text-on-surface-variant font-medium uppercase tracking-wider">Suggestions</span>
+                      </div>
+                    )}
+                    {suggestions.map((suggestion, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => handleSuggestionClick(suggestion)}
+                        className={`w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-container-highest transition-colors ${
+                          selectedSuggestion === i ? "bg-surface-container-highest" : ""
+                        }`}
+                      >
+                        <span className="material-symbols-outlined text-[20px] text-on-surface-variant">
+                          search
+                        </span>
+                        <span className="text-[14px] text-on-surface">{suggestion}</span>
+                      </button>
+                    ))}
+                  </>
+                )}
               </div>
             )}
           </form>

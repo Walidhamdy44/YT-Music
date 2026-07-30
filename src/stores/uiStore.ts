@@ -20,6 +20,7 @@ interface UIState {
   setSidebarCollapsed: (collapsed: boolean) => void;
   setSearchQuery: (query: string) => void;
   addToSearchHistory: (query: string) => void;
+  removeFromSearchHistory: (query: string) => void;
   clearSearchHistory: () => void;
 }
 
@@ -48,6 +49,10 @@ export const useUIStore = create<UIState>()(
             query,
             ...state.searchHistory.filter((q) => q !== query),
           ].slice(0, 20),
+        })),
+      removeFromSearchHistory: (query) =>
+        set((state) => ({
+          searchHistory: state.searchHistory.filter((q) => q !== query),
         })),
       clearSearchHistory: () => set({ searchHistory: [] }),
     }),

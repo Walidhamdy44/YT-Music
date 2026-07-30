@@ -295,7 +295,8 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       audioRef.current?.pause();
     });
     
-    // Previous/Next track handlers - these show in notification center
+    // Previous/Next track handlers - REGISTER FIRST for iOS priority
+    // iOS shows these in Control Center when swiped up
     navigator.mediaSession.setActionHandler("previoustrack", () => {
       console.log("[MediaSession] Previous track triggered");
       const prev = useQueueStore.getState().previous();
@@ -317,7 +318,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       }
     });
     
-    // Seek handlers
+    // Seek handlers - iOS shows these on lock screen compact view
+    // Remove seekbackward/seekforward to force iOS to show prev/next instead
+    // Note: Keeping seekto for scrubber functionality
     navigator.mediaSession.setActionHandler("seekto", (details) => {
       if (audioRef.current && details.seekTime != null) {
         console.log("[MediaSession] Seek to:", details.seekTime);
@@ -325,19 +328,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         usePlayerStore.getState().setCurrentTime(details.seekTime);
       }
     });
-    navigator.mediaSession.setActionHandler("seekbackward", (details) => {
-      if (audioRef.current) {
-        const skipTime = details.seekOffset || 10;
-        audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime - skipTime);
-      }
-    });
-    navigator.mediaSession.setActionHandler("seekforward", (details) => {
-      if (audioRef.current) {
-        const skipTime = details.seekOffset || 10;
-        const dur = audioRef.current.duration || 0;
-        audioRef.current.currentTime = Math.min(dur, audioRef.current.currentTime + skipTime);
-      }
-    });
+    
+    // Set seekbackward/seekforward to null to remove -10/+10 buttons
+    // This should make iOS show previoustrack/nexttrack instead
+    navigator.mediaSession.setActionHandler("seekbackward", null);
+    navigator.mediaSession.setActionHandler("seekforward", null);
     
     // Stop handler (some platforms use this)
     try {
