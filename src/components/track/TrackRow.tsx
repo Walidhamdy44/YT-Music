@@ -133,7 +133,7 @@ export function TrackRow({ track, tracks, index = 0, showDuration = true, showIn
 
       {/* Cache Status / Download Button */}
       {showCacheStatus && (
-        <div className="hidden sm:block" onClick={(e) => e.stopPropagation()}>
+        <div className="flex-shrink-0" onClick={(e) => e.stopPropagation()}>
           <DownloadButton track={track} variant="icon" size="sm" />
         </div>
       )}

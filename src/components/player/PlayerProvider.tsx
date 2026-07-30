@@ -5,7 +5,7 @@ import { usePlayerStore } from "@/stores/playerStore";
 import { useQueueStore } from "@/stores/queueStore";
 import { useOfflineStore } from "@/stores/offlineStore";
 import { offlinePlaybackService } from "@/lib/offlinePlaybackService";
-import { cacheMetadataStore, CacheMetadataStore } from "@/lib/cacheMetadataStore";
+import { CacheMetadataStore } from "@/lib/cacheMetadataStore";
 import type { Track } from "@/types";
 
 // Audio backend URL — use local API proxy to bypass ngrok warning
@@ -91,7 +91,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     };
 
     const handleEnded = () => {
-      handleTrackEndRef.current();
+      console.log("[PlayerProvider] Track ended, triggering next...");
+      // Use setTimeout to ensure this runs even in background
+      setTimeout(() => {
+        handleTrackEndRef.current();
+      }, 0);
     };
 
     const handleError = (e: Event) => {
@@ -208,25 +212,35 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   // Handle track end (next/repeat logic)
   const handleTrackEnd = useCallback(() => {
+    console.log("[PlayerProvider] handleTrackEnd called");
     const { repeatMode } = usePlayerStore.getState();
     const audio = audioRef.current;
 
     if (repeatMode === "one" && audio) {
+      console.log("[PlayerProvider] Repeat one - restarting track");
       audio.currentTime = 0;
-      audio.play().catch(() => {});
+      audio.play().catch((e) => console.error("[PlayerProvider] Repeat play failed:", e));
       return;
     }
 
     const nextTrack = next();
     if (nextTrack) {
-      playTrack(nextTrack, true);
+      console.log("[PlayerProvider] Playing next track:", nextTrack.title);
+      // Small delay to ensure audio context is ready (helps with background playback)
+      setTimeout(() => {
+        playTrack(nextTrack, true);
+      }, 100);
     } else if (repeatMode === "all") {
+      console.log("[PlayerProvider] Repeat all - restarting queue");
       const queue = useQueueStore.getState();
       if (queue.tracks.length > 0) {
         useQueueStore.getState().skipTo(0);
-        playTrack(queue.tracks[0], true);
+        setTimeout(() => {
+          playTrack(queue.tracks[0], true);
+        }, 100);
       }
     } else {
+      console.log("[PlayerProvider] Queue ended");
       usePlayerStore.getState().setStatus("idle");
     }
   }, [next]);
@@ -271,22 +285,42 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         : [],
     });
 
+    // Play/Pause handlers
     navigator.mediaSession.setActionHandler("play", () => {
+      console.log("[MediaSession] Play triggered");
       audioRef.current?.play().catch(() => {});
     });
     navigator.mediaSession.setActionHandler("pause", () => {
+      console.log("[MediaSession] Pause triggered");
       audioRef.current?.pause();
     });
+    
+    // Previous/Next track handlers - these show in notification center
     navigator.mediaSession.setActionHandler("previoustrack", () => {
+      console.log("[MediaSession] Previous track triggered");
       const prev = useQueueStore.getState().previous();
-      if (prev) playTrack(prev);
+      if (prev) {
+        playTrack(prev, true);
+      } else {
+        // If no previous, restart current track
+        if (audioRef.current) {
+          audioRef.current.currentTime = 0;
+          audioRef.current.play().catch(() => {});
+        }
+      }
     });
     navigator.mediaSession.setActionHandler("nexttrack", () => {
+      console.log("[MediaSession] Next track triggered");
       const n = useQueueStore.getState().next();
-      if (n) playTrack(n);
+      if (n) {
+        playTrack(n, true);
+      }
     });
+    
+    // Seek handlers
     navigator.mediaSession.setActionHandler("seekto", (details) => {
       if (audioRef.current && details.seekTime != null) {
+        console.log("[MediaSession] Seek to:", details.seekTime);
         audioRef.current.currentTime = details.seekTime;
         usePlayerStore.getState().setCurrentTime(details.seekTime);
       }
@@ -304,6 +338,20 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         audioRef.current.currentTime = Math.min(dur, audioRef.current.currentTime + skipTime);
       }
     });
+    
+    // Stop handler (some platforms use this)
+    try {
+      navigator.mediaSession.setActionHandler("stop", () => {
+        console.log("[MediaSession] Stop triggered");
+        if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current.currentTime = 0;
+        }
+        usePlayerStore.getState().setStatus("idle");
+      });
+    } catch {
+      // Not all browsers support stop
+    }
   }, [currentTrack]);
 
   // Update Media Session position state
