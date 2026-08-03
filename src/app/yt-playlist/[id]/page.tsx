@@ -3,6 +3,7 @@
 import { use, useEffect, useState, useRef, useCallback } from "react";
 import { Header } from "@/components/layout/Header";
 import { TrackRow } from "@/components/track/TrackRow";
+import { DownloadPlaylistButton } from "@/components/track/DownloadPlaylistButton";
 import { useQueueStore } from "@/stores/queueStore";
 import { playTrack } from "@/components/player/PlayerProvider";
 import type { Track } from "@/types";
@@ -202,6 +203,11 @@ export default function YTMusicPlaylistPage({ params }: { params: Promise<{ id: 
               >
                 <span className="material-symbols-outlined">shuffle</span>
               </button>
+              <DownloadPlaylistButton 
+                tracks={tracks} 
+                playlistName={playlist.title}
+                className="h-12 px-4"
+              />
             </div>
           </div>
         </div>

@@ -3,6 +3,7 @@
 import { Header } from "@/components/layout/Header";
 import { useLibraryStore } from "@/stores/libraryStore";
 import { TrackRow } from "@/components/track/TrackRow";
+import { DownloadPlaylistButton } from "@/components/track/DownloadPlaylistButton";
 import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -228,6 +229,15 @@ export default function LibraryPage() {
 
         {activeTab === "Liked Songs" && (
           <div className="flex flex-col gap-1">
+            {/* Download All button for Liked Songs */}
+            {ytLikedSongs.length > 0 && (
+              <div className="flex justify-end mb-4">
+                <DownloadPlaylistButton 
+                  tracks={ytLikedSongs} 
+                  playlistName="Liked Songs"
+                />
+              </div>
+            )}
             {loading ? (
               <div className="space-y-2">
                 {[1, 2, 3, 4, 5].map((i) => (
@@ -287,6 +297,15 @@ export default function LibraryPage() {
 
         {activeTab === "Saved" && (
           <div className="flex flex-col gap-1">
+            {/* Download All button for Saved Songs */}
+            {savedTracks.length > 0 && (
+              <div className="flex justify-end mb-4">
+                <DownloadPlaylistButton 
+                  tracks={savedTracks} 
+                  playlistName="Saved Songs"
+                />
+              </div>
+            )}
             {savedTracks.length > 0 ? (
               savedTracks.map((track, i) => (
                 <TrackRow
