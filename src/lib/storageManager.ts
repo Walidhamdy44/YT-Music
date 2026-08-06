@@ -177,29 +177,26 @@ class StorageManager {
   }
 
   /**
-   * Request persistent storage from the browser
-   * This prevents the browser from automatically clearing our cache
+   * Request persistent storage from the browser.
+   * On iOS Safari this may not be supported but we try anyway.
    */
   async requestPersistentStorage(): Promise<boolean> {
     if (!('storage' in navigator) || !('persist' in navigator.storage)) {
-      console.warn('[StorageManager] Persistent storage not supported');
+      console.warn('[StorageManager] Persistent storage API not supported');
       return false;
     }
 
     try {
-      // Check if already persisted
       const persisted = await navigator.storage.persisted();
       if (persisted) {
-        console.log('[StorageManager] Storage is already persistent');
+        console.log('[StorageManager] Storage already persistent');
         return true;
       }
-
-      // Request persistence
       const granted = await navigator.storage.persist();
-      console.log(`[StorageManager] Persistent storage ${granted ? 'granted' : 'denied'}`);
+      console.log(`[StorageManager] Persistent storage ${granted ? 'granted' : 'denied (will use best-effort)'}`);
       return granted;
     } catch (e) {
-      console.error('[StorageManager] Failed to request persistent storage:', e);
+      console.warn('[StorageManager] persist() failed:', e);
       return false;
     }
   }

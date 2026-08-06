@@ -36,38 +36,43 @@ class AudioCacheManager {
   }
 
   /**
-   * Generate cache key for a video
+   * Generate cache key for a video — must be an absolute URL for iOS Safari.
    */
   private getCacheKey(videoId: string): string {
-    return `/offline-audio/${videoId}`;
+    // Use absolute URL so iOS Safari's Cache API accepts it
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+    return `${origin}/offline-audio/${videoId}`;
   }
 
   /**
-   * Store audio blob in cache
-   * @returns true if cached successfully, false otherwise
+   * Store audio blob in cache.
+   * Uses a full absolute URL as the cache key — required for iOS Safari PWA.
    */
   async cacheAudio(videoId: string, audioBlob: Blob): Promise<boolean> {
     try {
-      // Check file size limit
       if (audioBlob.size > MAX_FILE_SIZE) {
-        console.warn(`[AudioCache] File too large (${(audioBlob.size / 1024 / 1024).toFixed(1)}MB), skipping cache for ${videoId}`);
+        console.warn(`[AudioCache] File too large (${(audioBlob.size / 1024 / 1024).toFixed(1)}MB), skipping ${videoId}`);
         return false;
       }
 
       const cache = await this.getCache();
       const cacheKey = this.getCacheKey(videoId);
 
-      // Create a Response object from the blob
+      // iOS Safari requires an explicit Response with status 200 and
+      // a real URL-based Request — plain path strings fail silently.
+      const request = new Request(cacheKey, { method: 'GET' });
       const response = new Response(audioBlob, {
+        status: 200,
+        statusText: 'OK',
         headers: {
-          'Content-Type': audioBlob.type || 'audio/mp4',
+          'Content-Type': audioBlob.type || 'audio/webm',
           'Content-Length': audioBlob.size.toString(),
           'X-Cached-At': Date.now().toString(),
         },
       });
 
-      await cache.put(cacheKey, response);
-      console.log(`[AudioCache] Cached ${videoId} (${(audioBlob.size / 1024 / 1024).toFixed(1)}MB)`);
+      await cache.put(request, response);
+      console.log(`[AudioCache] Cached ${videoId} (${(audioBlob.size / 1024 / 1024).toFixed(2)}MB)`);
       return true;
     } catch (error) {
       console.error(`[AudioCache] Failed to cache ${videoId}:`, error);
@@ -174,9 +179,13 @@ class AudioCacheManager {
       
       return keys
         .map(request => {
-          const url = new URL(request.url);
-          const match = url.pathname.match(/\/offline-audio\/([a-zA-Z0-9_-]{11})/);
-          return match ? match[1] : null;
+          try {
+            const url = new URL(request.url);
+            const match = url.pathname.match(/\/offline-audio\/([a-zA-Z0-9_-]{11})/);
+            return match ? match[1] : null;
+          } catch {
+            return null;
+          }
         })
         .filter((id): id is string => id !== null);
     } catch (error) {
