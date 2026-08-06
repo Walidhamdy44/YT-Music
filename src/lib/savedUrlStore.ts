@@ -9,13 +9,13 @@
  */
 
 import type { Track } from "@/types";
+import { getOfflineDb } from "./offlineDb";
 
 export interface SavedUrl {
   videoId: string;
   url: string;
   expiresAt: number;    // ms timestamp — 0 means unknown
   savedAt: number;
-  // Track metadata (for display)
   title: string;
   artist: string;
   thumbnail: string;
@@ -24,18 +24,13 @@ export interface SavedUrl {
   album?: string;
 }
 
-const DB_NAME = "yt-music-offline";
 const STORE_NAME = "saved-urls";
-const DB_VERSION = 3; // bump from 2 → 3 to add the new store
 
-// URL TTL — treat as expired 10 min before YouTube's actual expiry to give
-// some buffer for slow connections
+// Treat URL as expired 10 min before YouTube's actual expiry (buffer for slow connections)
 const EXPIRY_BUFFER_MS = 10 * 60 * 1000;
 
 class SavedUrlStore {
   private static instance: SavedUrlStore;
-  private db: IDBDatabase | null = null;
-  private initPromise: Promise<void> | null = null;
 
   private constructor() {}
 
@@ -46,58 +41,8 @@ class SavedUrlStore {
     return SavedUrlStore.instance;
   }
 
-  async init(): Promise<void> {
-    if (this.db) return;
-    if (this.initPromise) return this.initPromise;
-
-    this.initPromise = new Promise((resolve, reject) => {
-      if (typeof window === "undefined" || !("indexedDB" in window)) {
-        reject(new Error("IndexedDB not available"));
-        return;
-      }
-
-      const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-      request.onerror = () => {
-        console.error("[SavedUrlStore] DB open error:", request.error);
-        reject(request.error);
-      };
-
-      request.onsuccess = () => {
-        this.db = request.result;
-        console.log("[SavedUrlStore] DB opened");
-        resolve();
-      };
-
-      request.onupgradeneeded = (event) => {
-        const db = (event.target as IDBOpenDBRequest).result;
-
-        // Keep the existing cached-tracks store intact
-        if (!db.objectStoreNames.contains("cached-tracks")) {
-          const store = db.createObjectStore("cached-tracks", { keyPath: "videoId" });
-          store.createIndex("cachedAt", "cachedAt", { unique: false });
-          store.createIndex("lastPlayedAt", "lastPlayedAt", { unique: false });
-          store.createIndex("isManualDownload", "isManualDownload", { unique: false });
-          store.createIndex("artist", "artist", { unique: false });
-        }
-
-        // New store for saved URLs
-        if (!db.objectStoreNames.contains(STORE_NAME)) {
-          const urlStore = db.createObjectStore(STORE_NAME, { keyPath: "videoId" });
-          urlStore.createIndex("savedAt", "savedAt", { unique: false });
-          urlStore.createIndex("expiresAt", "expiresAt", { unique: false });
-          console.log("[SavedUrlStore] Object store created");
-        }
-      };
-    });
-
-    return this.initPromise;
-  }
-
   private async getDb(): Promise<IDBDatabase> {
-    await this.init();
-    if (!this.db) throw new Error("DB not initialized");
-    return this.db;
+    return getOfflineDb();
   }
 
   /** Save a URL entry */
@@ -155,34 +100,29 @@ class SavedUrlStore {
     });
   }
 
-  /**
-   * Check if a saved URL is still valid (not expired).
-   * Returns the URL if valid, null if expired or not found.
-   */
+  /** Check if a saved URL entry is still valid */
   isValid(entry: SavedUrl): boolean {
-    if (!entry.expiresAt) return true; // unknown expiry — assume valid
+    if (!entry.expiresAt) return true;
     return Date.now() < entry.expiresAt - EXPIRY_BUFFER_MS;
   }
 
-  /**
-   * Get a valid URL for a videoId, or null if expired/missing.
-   */
+  /** Get a valid URL for a videoId, or null if expired/missing */
   async getValidUrl(videoId: string): Promise<string | null> {
-    const entry = await this.get(videoId);
-    if (!entry) return null;
-    if (!this.isValid(entry)) {
-      console.log(`[SavedUrlStore] URL expired for ${videoId}`);
+    try {
+      const entry = await this.get(videoId);
+      if (!entry) return null;
+      if (!this.isValid(entry)) {
+        console.log(`[SavedUrlStore] URL expired for ${videoId}`);
+        return null;
+      }
+      return entry.url;
+    } catch {
       return null;
     }
-    return entry.url;
   }
 
   /** Create a SavedUrl from a track + resolved URL data */
-  static createEntry(
-    track: Track,
-    url: string,
-    expiresAt: number
-  ): SavedUrl {
+  static createEntry(track: Track, url: string, expiresAt: number): SavedUrl {
     return {
       videoId: track.videoId,
       url,

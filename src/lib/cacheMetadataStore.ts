@@ -6,9 +6,10 @@
  */
 
 import type { Track } from '@/types';
+import { getOfflineDb } from './offlineDb';
 
 export interface CachedTrackMetadata {
-  videoId: string;           // Primary key
+  videoId: string;
   title: string;
   artist: string;
   artistId?: string;
@@ -17,21 +18,17 @@ export interface CachedTrackMetadata {
   duration: number;
   thumbnail: string;
   thumbnailLarge?: string;
-  fileSize: number;          // Bytes
-  cachedAt: number;          // Timestamp when cached
-  lastPlayedAt: number;      // Timestamp for LRU eviction
-  isManualDownload: boolean; // true = manual download, false = auto-cached
+  fileSize: number;
+  cachedAt: number;
+  lastPlayedAt: number;
+  isManualDownload: boolean;
   mimeType: string;
 }
 
-const DB_NAME = 'yt-music-offline';
 const STORE_NAME = 'cached-tracks';
-const DB_VERSION = 3;
 
 class CacheMetadataStore {
   private static instance: CacheMetadataStore;
-  private db: IDBDatabase | null = null;
-  private initPromise: Promise<void> | null = null;
 
   private constructor() {}
 
@@ -42,72 +39,20 @@ class CacheMetadataStore {
     return CacheMetadataStore.instance;
   }
 
-  /**
-   * Initialize the database
-   */
+  /** Initialize — just ensures the shared DB is open */
   async init(): Promise<void> {
-    if (this.db) return;
-    
-    if (this.initPromise) {
-      return this.initPromise;
-    }
-
-    this.initPromise = new Promise((resolve, reject) => {
-      if (typeof window === 'undefined' || !('indexedDB' in window)) {
-        reject(new Error('IndexedDB not available'));
-        return;
-      }
-
-      const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-      request.onerror = () => {
-        console.error('[CacheMetadataStore] Failed to open database:', request.error);
-        reject(request.error);
-      };
-
-      request.onsuccess = () => {
-        this.db = request.result;
-        console.log('[CacheMetadataStore] Database opened successfully');
-        resolve();
-      };
-
-      request.onupgradeneeded = (event) => {
-        const db = (event.target as IDBOpenDBRequest).result;
-        
-        // Create object store if it doesn't exist
-        if (!db.objectStoreNames.contains(STORE_NAME)) {
-          const store = db.createObjectStore(STORE_NAME, { keyPath: 'videoId' });
-          
-          // Create indexes for queries
-          store.createIndex('cachedAt', 'cachedAt', { unique: false });
-          store.createIndex('lastPlayedAt', 'lastPlayedAt', { unique: false });
-          store.createIndex('isManualDownload', 'isManualDownload', { unique: false });
-          store.createIndex('artist', 'artist', { unique: false });
-          
-          console.log('[CacheMetadataStore] Object store created');
-        }
-      };
-    });
-
-    return this.initPromise;
+    await getOfflineDb();
   }
 
-  /**
-   * Ensure database is initialized
-   */
-  private async ensureInit(): Promise<IDBDatabase> {
-    await this.init();
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
-    return this.db;
+  private async getDb(): Promise<IDBDatabase> {
+    return getOfflineDb();
   }
 
   /**
    * Save track metadata
    */
   async saveMetadata(metadata: CachedTrackMetadata): Promise<void> {
-    const db = await this.ensureInit();
+    const db = await this.getDb();
 
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(STORE_NAME, 'readwrite');
@@ -130,7 +75,7 @@ class CacheMetadataStore {
    * Get track metadata by videoId
    */
   async getMetadata(videoId: string): Promise<CachedTrackMetadata | null> {
-    const db = await this.ensureInit();
+    const db = await this.getDb();
 
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(STORE_NAME, 'readonly');
@@ -151,7 +96,7 @@ class CacheMetadataStore {
    * Get all cached track metadata
    */
   async getAllMetadata(): Promise<CachedTrackMetadata[]> {
-    const db = await this.ensureInit();
+    const db = await this.getDb();
 
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(STORE_NAME, 'readonly');
@@ -172,7 +117,7 @@ class CacheMetadataStore {
    * Delete track metadata
    */
   async deleteMetadata(videoId: string): Promise<void> {
-    const db = await this.ensureInit();
+    const db = await this.getDb();
 
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(STORE_NAME, 'readwrite');
@@ -231,7 +176,7 @@ class CacheMetadataStore {
    * Get total count of cached tracks
    */
   async getCount(): Promise<number> {
-    const db = await this.ensureInit();
+    const db = await this.getDb();
 
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(STORE_NAME, 'readonly');
@@ -260,7 +205,7 @@ class CacheMetadataStore {
    * Clear all metadata
    */
   async clearAll(): Promise<void> {
-    const db = await this.ensureInit();
+    const db = await this.getDb();
 
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(STORE_NAME, 'readwrite');
