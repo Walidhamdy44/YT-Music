@@ -6,20 +6,14 @@ const AUDIO_BACKEND_URL =
   "http://localhost:8000";
 
 /**
- * Download endpoint — fetches the full audio from the Python backend's
- * /download route (which buffers on the Python side), then re-sends it as a
- * single buffered response from Next.js.
+ * Download proxy — streams audio from the Python backend's /download endpoint.
  *
- * WHY: Vercel strips Content-Length on streaming responses.
- *      Without Content-Length the browser cannot track download progress —
- *      the ReadableStream reader never gets a total byte count and the UI
- *      stays stuck at ~50%.  Buffering here ensures the header is present.
+ * The Python /download endpoint now streams (not buffers) but still sends
+ * Content-Length from the YouTube CDN.  We forward it here.
  *
- * TRADE-OFF: The full file (~3-5 MB) is held in memory on the serverless
- *            function.  On Vercel's free plan the limit is 50 MB — fine for
- *            audio files.  The function must complete within Vercel's timeout;
- *            the Python /download endpoint fetches from YouTube first so the
- *            cold-path time is dominated by YouTube CDN speed (~2-8 s).
+ * NOTE: Vercel may strip Content-Length on streaming NextResponse bodies.
+ * To guarantee it reaches the browser we also add it to
+ * Access-Control-Expose-Headers so JS fetch() can read it via CORS.
  */
 export async function GET(
   _request: NextRequest,
@@ -32,8 +26,6 @@ export async function GET(
   }
 
   try {
-    // Use the Python /download endpoint — it already buffers the full file
-    // and returns it with Content-Length set.
     const backendRes = await fetch(`${AUDIO_BACKEND_URL}/download/${videoId}`, {
       headers: {
         "ngrok-skip-browser-warning": "true",
@@ -42,28 +34,32 @@ export async function GET(
     });
 
     if (!backendRes.ok) {
-      console.error(`[Download API] Backend error: ${backendRes.status}`);
       return NextResponse.json(
         { error: "Audio fetch failed" },
         { status: backendRes.status }
       );
     }
 
-    // Buffer the entire response body in this serverless function so we can
-    // report an exact Content-Length to the browser.
-    const buffer = await backendRes.arrayBuffer();
     const contentType = backendRes.headers.get("Content-Type") || "audio/webm";
+    const contentLength = backendRes.headers.get("Content-Length");
 
-    console.log(`[Download API] ${videoId}: ${buffer.byteLength} bytes, type: ${contentType}`);
+    console.log(`[Download API] ${videoId}: Content-Length=${contentLength}, type=${contentType}`);
 
-    return new NextResponse(buffer, {
+    const headers: Record<string, string> = {
+      "Content-Type": contentType,
+      "Cache-Control": "private, max-age=3600",
+      "Access-Control-Expose-Headers": "Content-Length, Content-Type",
+    };
+
+    if (contentLength) {
+      headers["Content-Length"] = contentLength;
+    }
+
+    // Stream straight through — no buffering in this serverless function.
+    // The Python side sends Content-Length so the browser can track progress.
+    return new NextResponse(backendRes.body, {
       status: 200,
-      headers: {
-        "Content-Type": contentType,
-        "Content-Length": String(buffer.byteLength),   // guaranteed exact — enables progress tracking
-        "Cache-Control": "private, max-age=3600",
-        "Access-Control-Expose-Headers": "Content-Length, Content-Type",
-      },
+      headers,
     });
   } catch (err) {
     console.error("[Download API] Error:", err);
