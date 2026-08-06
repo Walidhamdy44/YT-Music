@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 
 const AUDIO_BACKEND_URL = process.env.AUDIO_BACKEND_URL || process.env.NEXT_PUBLIC_AUDIO_BACKEND_URL || "http://localhost:8000";
 
+// Increase timeout for this route
+export const maxDuration = 300; // 5 minutes
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ videoId: string }> }
@@ -24,11 +27,16 @@ export async function GET(
   }
 
   try {
+    console.log(`[Audio API] Fetching from ${AUDIO_BACKEND_URL}/audio/${videoId}`);
+    
     const response = await fetch(`${AUDIO_BACKEND_URL}/audio/${videoId}`, {
       headers,
     });
 
+    console.log(`[Audio API] Backend response: ${response.status}, Content-Length: ${response.headers.get("Content-Length")}`);
+
     if (!response.ok && response.status !== 206) {
+      console.error(`[Audio API] Backend error: ${response.status}`);
       return NextResponse.json(
         { error: "Failed to fetch audio" },
         { status: response.status }
@@ -39,6 +47,7 @@ export async function GET(
     responseHeaders.set("Content-Type", response.headers.get("Content-Type") || "audio/webm");
     responseHeaders.set("Accept-Ranges", "bytes");
     responseHeaders.set("Cache-Control", "private, max-age=3600");
+    responseHeaders.set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Content-Type");
     
     if (response.headers.get("Content-Length")) {
       responseHeaders.set("Content-Length", response.headers.get("Content-Length")!);
@@ -52,7 +61,7 @@ export async function GET(
       headers: responseHeaders,
     });
   } catch (error) {
-    console.error("Audio proxy error:", error);
+    console.error("[Audio API] Proxy error:", error);
     return NextResponse.json(
       { error: "Audio proxy failed" },
       { status: 502 }

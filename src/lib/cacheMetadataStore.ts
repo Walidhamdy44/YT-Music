@@ -26,7 +26,7 @@ export interface CachedTrackMetadata {
 
 const DB_NAME = 'yt-music-offline';
 const STORE_NAME = 'cached-tracks';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 class CacheMetadataStore {
   private static instance: CacheMetadataStore;

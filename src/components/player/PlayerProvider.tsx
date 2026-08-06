@@ -10,6 +10,7 @@ import type { Track } from "@/types";
 
 // Audio backend URL — use local API proxy to bypass ngrok warning
 const AUDIO_BACKEND_URL = "/api";
+const DOWNLOAD_BACKEND_URL = "/api/download";
 
 // Track the current blob URL to revoke when changing tracks
 let currentBlobUrl: string | null = null;
@@ -393,24 +394,30 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
  * Initialize offline playback system
  */
 async function initializeOfflinePlayback() {
+  // Set online/offline state IMMEDIATELY before any async ops
+  useOfflineStore.getState().setOffline(!navigator.onLine);
+  
+  // Always mark as initialized — button should work even if cache fails
+  // Errors will surface naturally during the download attempt
+  useOfflineStore.getState().setInitialized(true);
+
+  // Register online/offline listeners
+  window.addEventListener('online', () => {
+    console.log('[OfflinePlayback] Network: online');
+    useOfflineStore.getState().setOffline(false);
+  });
+  window.addEventListener('offline', () => {
+    console.log('[OfflinePlayback] Network: offline');
+    useOfflineStore.getState().setOffline(true);
+  });
+
   try {
     await offlinePlaybackService.init();
-    
-    // Load cached tracks into store
     const cachedTracks = await offlinePlaybackService.getCachedTracks();
     useOfflineStore.getState().setCachedTracks(cachedTracks);
-    useOfflineStore.getState().setInitialized(true);
-    
-    // Set up online/offline listeners
-    const handleOnline = () => useOfflineStore.getState().setOffline(false);
-    const handleOffline = () => useOfflineStore.getState().setOffline(true);
-    
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-    
     console.log(`[OfflinePlayback] Initialized with ${cachedTracks.length} cached tracks`);
   } catch (e) {
-    console.warn('[OfflinePlayback] Initialization failed:', e);
+    console.warn('[OfflinePlayback] Initialization failed (non-fatal):', e);
   }
 }
 
@@ -544,13 +551,14 @@ async function cacheAudioInBackground(track: Track) {
   try {
     console.log("[playTrack] Caching in background:", track.videoId);
     
-    // Fetch the audio
-    const response = await fetch(`${AUDIO_BACKEND_URL}/audio/${track.videoId}`);
+    // Use the dedicated download endpoint for better reliability
+    const response = await fetch(`${DOWNLOAD_BACKEND_URL}/${track.videoId}`);
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
 
     const audioBlob = await response.blob();
+    console.log(`[playTrack] Background download received: ${audioBlob.size} bytes`);
     
     // Cache it
     const success = await offlinePlaybackService.cachePlayedAudio(track, audioBlob);

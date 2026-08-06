@@ -36,12 +36,21 @@ export function DownloadButton({
   const [showDelete, setShowDelete] = useState(false);
 
   const iconSize = size === "sm" ? 16 : 20;
+  
+  // Button is only disabled when actually offline
+  const isButtonDisabled = isOffline;
 
   // Handle download click
   const handleDownload = useCallback(async () => {
-    if (isDownloading || isCached || isOffline) return;
+    console.log('[DownloadButton] handleDownload called', { isDownloading, isCached, isOffline, videoId: track.videoId });
+    
+    if (isDownloading || isCached || isButtonDisabled) {
+      console.log('[DownloadButton] Download blocked:', { isDownloading, isCached, isButtonDisabled });
+      return;
+    }
 
-    // Add to queue
+    console.log('[DownloadButton] Starting download for:', track.title);
+
     addToDownloadQueue({
       videoId: track.videoId,
       title: track.title,
@@ -60,25 +69,29 @@ export function DownloadButton({
       );
 
       if (success) {
+        console.log('[DownloadButton] Download successful:', track.videoId);
         updateDownloadStatus(track.videoId, "completed");
-        // Get the metadata and add to store
         const cacheStatus = await offlinePlaybackService.getCacheStatus(track.videoId);
         if (cacheStatus.isCached && cacheStatus.fileSize) {
           const metadata = CacheMetadataStore.createMetadata(track, cacheStatus.fileSize, true);
           addCachedTrack(metadata);
         }
-        // Remove from queue after short delay
         setTimeout(() => removeFromDownloadQueue(track.videoId), 1000);
       } else {
+        console.error('[DownloadButton] Download failed:', track.videoId);
         updateDownloadStatus(track.videoId, "failed", "Download failed");
+        setTimeout(() => removeFromDownloadQueue(track.videoId), 3000);
       }
     } catch (e) {
+      console.error('[DownloadButton] Download error:', e);
       updateDownloadStatus(track.videoId, "failed", String(e));
+      setTimeout(() => removeFromDownloadQueue(track.videoId), 3000);
     }
   }, [
     track,
     isDownloading,
     isCached,
+    isButtonDisabled,
     isOffline,
     addToDownloadQueue,
     updateDownloadProgress,
@@ -161,13 +174,13 @@ export function DownloadButton({
     return (
       <button
         onClick={handleDownload}
-        disabled={isOffline}
+        disabled={isButtonDisabled}
         className={cn(
           "inline-flex items-center justify-center p-1 rounded-full hover:bg-muted/50 transition-colors",
-          isOffline && "opacity-50 cursor-not-allowed",
+          isButtonDisabled && "opacity-50 cursor-not-allowed",
           className
         )}
-        title={isOffline ? "Cannot download while offline" : "Download for offline"}
+        title={isButtonDisabled ? "Cannot download while offline" : "Download for offline"}
       >
         <Download size={iconSize} className="text-muted-foreground" />
       </button>
@@ -208,7 +221,7 @@ export function DownloadButton({
       variant="outline"
       size={size}
       onClick={handleDownload}
-      disabled={isOffline}
+      disabled={isButtonDisabled}
       className={cn("gap-2", className)}
     >
       <Download size={14} />

@@ -10,7 +10,8 @@ import { cacheMetadataStore, CacheMetadataStore, type CachedTrackMetadata } from
 import { storageManager } from './storageManager';
 import type { Track } from '@/types';
 
-const AUDIO_API_BASE = '/api/audio';
+const AUDIO_API_BASE = '/api/audio';       // streaming — for playback
+const DOWNLOAD_API_BASE = '/api/download'; // buffered  — for caching
 
 export interface AudioSource {
   url: string;
@@ -147,16 +148,19 @@ class OfflinePlaybackService {
   }
 
   /**
-   * Download track for offline (manual download)
-   * Unlike auto-caching, this is user-initiated
+   * Download track for offline (manual download).
+   * Uses /api/download which buffers the full audio server-side and returns
+   * an exact Content-Length — allowing real progress tracking via stream reader.
    */
   async downloadForOffline(track: Track, onProgress?: (progress: number) => void): Promise<boolean> {
     await this.init();
 
-    // Skip if already cached
+    console.log(`[OfflinePlayback] downloadForOffline: ${track.videoId} — ${track.title}`);
+
+    // Already cached?
     const alreadyCached = await audioCache.isAudioCached(track.videoId);
     if (alreadyCached) {
-      // Update to manual download status if it was auto-cached
+      console.log(`[OfflinePlayback] Already cached: ${track.videoId}`);
       const metadata = await cacheMetadataStore.getMetadata(track.videoId);
       if (metadata && !metadata.isManualDownload) {
         metadata.isManualDownload = true;
@@ -166,50 +170,107 @@ class OfflinePlaybackService {
       return true;
     }
 
-    // Check if online
     if (!this.isOnline()) {
-      console.warn('[OfflinePlayback] Cannot download while offline');
+      console.warn('[OfflinePlayback] Offline — cannot download');
       return false;
     }
 
-    try {
-      onProgress?.(5); // Show some initial progress
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      console.error('[OfflinePlayback] Download timeout, aborting');
+      controller.abort();
+    }, 5 * 60 * 1000);
 
-      // Fetch the audio as a blob directly (simpler and works with streaming)
-      const response = await fetch(`${AUDIO_API_BASE}/${track.videoId}`);
+    try {
+      onProgress?.(5);
+
+      // Use the buffered download endpoint — it returns Content-Length reliably
+      const url = `${DOWNLOAD_API_BASE}/${track.videoId}`;
+      console.log(`[OfflinePlayback] Fetching: ${url}`);
+
+      const response = await fetch(url, { signal: controller.signal });
+
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
 
-      onProgress?.(20); // Fetching started
+      const contentLength = response.headers.get('Content-Length');
+      const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
+      const contentType = response.headers.get('Content-Type') || 'audio/webm';
 
-      // Get the blob directly - this waits for the full download
-      const audioBlob = await response.blob();
-      
-      onProgress?.(80); // Download complete, now caching
+      console.log(`[OfflinePlayback] Content-Length: ${totalBytes}, type: ${contentType}`);
 
-      // Ensure we have space
+      onProgress?.(10);
+
+      // Stream with progress if we know the total size
+      let audioBlob: Blob;
+
+      if (totalBytes > 0 && response.body) {
+        const reader = response.body.getReader();
+        const chunks: Uint8Array[] = [];
+        let received = 0;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.length;
+          // 10 → 88 % while downloading
+          onProgress?.(Math.round(10 + (received / totalBytes) * 78));
+        }
+
+        // Reassemble
+        const combined = new Uint8Array(received);
+        let offset = 0;
+        for (const chunk of chunks) { combined.set(chunk, offset); offset += chunk.length; }
+        audioBlob = new Blob([combined], { type: contentType });
+        console.log(`[OfflinePlayback] Downloaded ${audioBlob.size} bytes`);
+      } else {
+        // Fallback when Content-Length is missing
+        console.warn('[OfflinePlayback] No Content-Length, using response.blob()');
+        onProgress?.(50);
+        audioBlob = await response.blob();
+        console.log(`[OfflinePlayback] Downloaded ${audioBlob.size} bytes (blob fallback)`);
+      }
+
+      clearTimeout(timeoutId);
+
+      if (audioBlob.size < 1000) {
+        console.error(`[OfflinePlayback] Blob too small (${audioBlob.size}B) — likely an error page`);
+        return false;
+      }
+
+      onProgress?.(90);
+
+      // Make sure there is enough storage
       const hasSpace = await storageManager.ensureSpace(audioBlob.size);
       if (!hasSpace) {
-        console.warn('[OfflinePlayback] Not enough storage for manual download');
+        console.warn('[OfflinePlayback] Not enough storage');
         return false;
       }
 
-      // Cache the audio
+      // Write to Cache API
       const cached = await audioCache.cacheAudio(track.videoId, audioBlob);
       if (!cached) {
+        console.error('[OfflinePlayback] audioCache.cacheAudio failed');
         return false;
       }
 
-      // Save metadata (mark as manual download)
+      // Persist metadata
       const metadata = CacheMetadataStore.createMetadata(track, audioBlob.size, true);
       await cacheMetadataStore.saveMetadata(metadata);
 
       onProgress?.(100);
-      console.log(`[OfflinePlayback] Downloaded: ${track.title} (${(audioBlob.size / 1024 / 1024).toFixed(1)}MB)`);
+      console.log(`[OfflinePlayback] ✅ Saved: ${track.title} (${(audioBlob.size / 1024 / 1024).toFixed(2)} MB)`);
       return true;
+
     } catch (e) {
-      console.error(`[OfflinePlayback] Download failed for ${track.videoId}:`, e);
+      clearTimeout(timeoutId);
+      if (e instanceof Error && e.name === 'AbortError') {
+        console.error('[OfflinePlayback] Aborted (timeout)');
+      } else {
+        console.error('[OfflinePlayback] Download error:', e);
+      }
       return false;
     }
   }
