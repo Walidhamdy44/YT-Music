@@ -6,7 +6,8 @@
  */
 
 const CACHE_NAME = 'yt-music-audio-v1';
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB max per file
+// No hard-coded per-file size limit — let the real device quota be the limit.
+// We'll get a QuotaExceededError from the Cache API if the device is truly full.
 
 class AudioCacheManager {
   private static instance: AudioCacheManager;
@@ -51,16 +52,9 @@ class AudioCacheManager {
    */
   async cacheAudio(videoId: string, audioBlob: Blob): Promise<boolean> {
     try {
-      if (audioBlob.size > MAX_FILE_SIZE) {
-        console.warn(`[AudioCache] File too large (${(audioBlob.size / 1024 / 1024).toFixed(1)}MB), skipping ${videoId}`);
-        return false;
-      }
-
       const cache = await this.getCache();
       const cacheKey = this.getCacheKey(videoId);
 
-      // iOS Safari requires an explicit Response with status 200 and
-      // a real URL-based Request — plain path strings fail silently.
       const request = new Request(cacheKey, { method: 'GET' });
       const response = new Response(audioBlob, {
         status: 200,
@@ -81,7 +75,7 @@ class AudioCacheManager {
         error.name === 'NS_ERROR_DOM_QUOTA_REACHED'
       );
       if (isQuota) {
-        console.warn(`[AudioCache] Quota exceeded for ${videoId} — caller should evict and retry`);
+        console.warn(`[AudioCache] Quota exceeded for ${videoId}`);
       } else {
         console.error(`[AudioCache] Failed to cache ${videoId}:`, error);
       }

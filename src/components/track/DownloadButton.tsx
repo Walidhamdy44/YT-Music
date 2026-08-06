@@ -84,8 +84,12 @@ export function DownloadButton({
       }
     } catch (e) {
       console.error('[DownloadButton] Download error:', e);
-      updateDownloadStatus(track.videoId, "failed", String(e));
-      setTimeout(() => removeFromDownloadQueue(track.videoId), 3000);
+      const isStorageFull = e instanceof Error && e.message === 'STORAGE_FULL';
+      const errorMsg = isStorageFull
+        ? 'Storage full — free up space in Settings → Storage'
+        : 'Download failed';
+      updateDownloadStatus(track.videoId, "failed", errorMsg);
+      setTimeout(() => removeFromDownloadQueue(track.videoId), 4000);
     }
   }, [
     track,

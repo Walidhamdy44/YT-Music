@@ -1,21 +1,24 @@
 /**
  * StorageManager - Handles storage quota monitoring and cache eviction
- * 
- * Monitors available storage, triggers eviction when needed,
- * and requests persistent storage permission.
+ *
+ * Uses navigator.storage.estimate() for the real device quota.
+ * No hard-coded size limits — the actual device quota is the ceiling.
+ * Manual downloads are NEVER deleted by eviction.
  */
 
 import { audioCache } from './audioCache';
-import { cacheMetadataStore, type CachedTrackMetadata } from './cacheMetadataStore';
+import { cacheMetadataStore } from './cacheMetadataStore';
 
-const MIN_FREE_SPACE = 5 * 1024 * 1024;      // 5MB buffer (was 100MB — too large for iOS 50MB quota)
-const WARNING_THRESHOLD = 10 * 1024 * 1024;  // 10MB warning (was 200MB)
+// Small safety buffer so we don't fill the quota to the last byte
+const SAFETY_BUFFER = 2 * 1024 * 1024; // 2 MB
+// Warn when less than this is free
+const WARNING_THRESHOLD = 20 * 1024 * 1024; // 20 MB
 
 export interface StorageStats {
-  used: number;       // Bytes used by our cache
-  quota: number;      // Total quota available
-  available: number;  // Free space
-  cachedCount: number; // Number of cached tracks
+  used: number;        // bytes used by our cache (from IndexedDB metadata)
+  quota: number;       // total quota reported by browser (0 = unknown)
+  available: number;   // free space (quota - browser total usage), Infinity if unknown
+  cachedCount: number; // number of cached tracks
 }
 
 class StorageManager {
@@ -31,100 +34,68 @@ class StorageManager {
   }
 
   /**
-   * Get current storage statistics
+   * Get current storage statistics using the real browser quota.
    */
   async getStorageStats(): Promise<StorageStats> {
     let quota = 0;
     let totalUsed = 0;
 
-    // Try to get storage estimate
     if ('storage' in navigator && 'estimate' in navigator.storage) {
       try {
         const estimate = await navigator.storage.estimate();
         quota = estimate.quota || 0;
         totalUsed = estimate.usage || 0;
       } catch (e) {
-        console.warn('[StorageManager] Failed to get storage estimate:', e);
+        console.warn('[StorageManager] estimate() failed:', e);
       }
     }
 
-    // Get our cache size
     const cacheUsed = await cacheMetadataStore.getTotalSize();
     const cachedCount = await cacheMetadataStore.getCount();
-
-    // Calculate available space
     const available = quota > 0 ? quota - totalUsed : Infinity;
 
-    return {
-      used: cacheUsed,
-      quota,
-      available,
-      cachedCount,
-    };
+    return { used: cacheUsed, quota, available, cachedCount };
   }
 
   /**
-   * Check if we can cache a file of the given size
+   * Returns true when the device has enough free space for fileSize bytes.
+   * If the quota is unknown (quota === 0) we optimistically allow it.
    */
   async canCache(fileSize: number): Promise<boolean> {
     const stats = await this.getStorageStats();
-    
-    // If we can't determine quota, allow caching (will fail naturally if no space)
-    if (stats.quota === 0) {
-      return true;
-    }
-
-    // Check if we have enough space (keeping MIN_FREE_SPACE buffer)
-    return stats.available > fileSize + MIN_FREE_SPACE;
+    if (stats.quota === 0) return true; // unknown — let the Cache API decide
+    return stats.available > fileSize + SAFETY_BUFFER;
   }
 
   /**
-   * Evict tracks to free up required space
-   * Returns the number of bytes freed
-   * 
-   * Eviction priority:
-   * 1. Auto-cached tracks (least recently played first)
-   * 2. Manual downloads (least recently played first)
+   * Evict ONLY auto-cached (non-manual) tracks, oldest first, until
+   * requiredSpace bytes are freed.  Manual downloads are never touched.
+   * Returns the number of bytes actually freed.
+   */
+  async evictAutoCache(requiredSpace: number): Promise<number> {
+    console.log(`[StorageManager] Evicting auto-cache to free ${(requiredSpace / 1024 / 1024).toFixed(1)} MB`);
+
+    const autoCached = await cacheMetadataStore.getAutoCachedTracks(); // sorted oldest-first
+    let freed = 0;
+
+    for (const track of autoCached) {
+      if (freed >= requiredSpace) break;
+      const ok = await this.deleteTrack(track.videoId);
+      if (ok) {
+        freed += track.fileSize;
+        console.log(`[StorageManager] Evicted: ${track.title} (${(track.fileSize / 1024 / 1024).toFixed(1)} MB)`);
+      }
+    }
+
+    console.log(`[StorageManager] Freed ${(freed / 1024 / 1024).toFixed(1)} MB`);
+    return freed;
+  }
+
+  /**
+   * @deprecated use evictAutoCache — kept for backwards compatibility
    */
   async evictToFreeSpace(requiredSpace: number): Promise<number> {
-    console.log(`[StorageManager] Evicting to free ${(requiredSpace / 1024 / 1024).toFixed(1)}MB`);
-    
-    let freedSpace = 0;
-    const evictedIds: string[] = [];
-
-    // First, try to evict auto-cached tracks
-    const autoCached = await cacheMetadataStore.getAutoCachedTracks();
-    
-    for (const track of autoCached) {
-      if (freedSpace >= requiredSpace) break;
-      
-      const deleted = await this.deleteTrack(track.videoId);
-      if (deleted) {
-        freedSpace += track.fileSize;
-        evictedIds.push(track.videoId);
-        console.log(`[StorageManager] Evicted auto-cached: ${track.title} (${(track.fileSize / 1024 / 1024).toFixed(1)}MB)`);
-      }
-    }
-
-    // If still need more space, evict manual downloads
-    if (freedSpace < requiredSpace) {
-      const allTracks = await cacheMetadataStore.getTracksByLastPlayed();
-      const manualDownloads = allTracks.filter(t => t.isManualDownload);
-      
-      for (const track of manualDownloads) {
-        if (freedSpace >= requiredSpace) break;
-        
-        const deleted = await this.deleteTrack(track.videoId);
-        if (deleted) {
-          freedSpace += track.fileSize;
-          evictedIds.push(track.videoId);
-          console.log(`[StorageManager] Evicted manual download: ${track.title} (${(track.fileSize / 1024 / 1024).toFixed(1)}MB)`);
-        }
-      }
-    }
-
-    console.log(`[StorageManager] Eviction complete. Freed ${(freedSpace / 1024 / 1024).toFixed(1)}MB from ${evictedIds.length} tracks`);
-    return freedSpace;
+    return this.evictAutoCache(requiredSpace);
   }
 
   /**
@@ -217,54 +188,40 @@ class StorageManager {
   }
 
   /**
-   * Check if storage is low (below warning threshold)
+   * Check if storage is low (less than WARNING_THRESHOLD free)
    */
   async isStorageLow(): Promise<boolean> {
     const stats = await this.getStorageStats();
-    
-    // If quota is 0, we can't determine (probably not supported)
-    if (stats.quota === 0) {
-      return false;
-    }
-
+    if (stats.quota === 0) return false;
     return stats.available < WARNING_THRESHOLD;
   }
 
   /**
-   * Check if storage is critical (below minimum threshold)
+   * Check if storage is critically low (less than SAFETY_BUFFER free)
    */
   async isStorageCritical(): Promise<boolean> {
     const stats = await this.getStorageStats();
-    
-    if (stats.quota === 0) {
-      return false;
-    }
-
-    return stats.available < MIN_FREE_SPACE;
+    if (stats.quota === 0) return false;
+    return stats.available < SAFETY_BUFFER;
   }
 
   /**
-   * Ensure there's enough space to cache a file, evicting if necessary
-   * Returns true if space is available (or was freed), false if impossible
+   * Ensure there is space for a manual download.
+   * Evicts ONLY auto-cached tracks to make room.
+   * Returns true if space is available after eviction, false if still not enough
+   * (meaning the user's manual downloads fill the quota — they must delete some).
    */
   async ensureSpace(requiredSize: number): Promise<boolean> {
-    // Check current space
-    if (await this.canCache(requiredSize)) {
-      return true;
-    }
+    if (await this.canCache(requiredSize)) return true;
 
-    // Try to evict to make space
+    // Try evicting auto-cache only
     const stats = await this.getStorageStats();
-    const neededSpace = requiredSize + MIN_FREE_SPACE - stats.available;
-    
-    if (neededSpace > 0) {
-      const freed = await this.evictToFreeSpace(neededSpace);
-      
-      // Check if we freed enough
-      return freed >= neededSpace;
+    const needed = requiredSize + SAFETY_BUFFER - stats.available;
+    if (needed > 0) {
+      await this.evictAutoCache(needed);
     }
 
-    return false;
+    return this.canCache(requiredSize);
   }
 
   /**
@@ -324,4 +281,4 @@ class StorageManager {
 
 // Export singleton instance
 export const storageManager = StorageManager.getInstance();
-export { StorageManager, MIN_FREE_SPACE, WARNING_THRESHOLD };
+export { StorageManager, WARNING_THRESHOLD };

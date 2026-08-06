@@ -242,28 +242,18 @@ class OfflinePlaybackService {
 
       onProgress?.(90);
 
-      // Make sure there is enough storage (evicts old tracks if needed)
+      // Check space — only evicts auto-cached tracks, never manual downloads
       const hasSpace = await storageManager.ensureSpace(audioBlob.size);
       if (!hasSpace) {
-        console.warn('[OfflinePlayback] Not enough storage — trying aggressive eviction');
-        // Force-evict everything auto-cached to make room
-        const freed = await storageManager.evictToFreeSpace(audioBlob.size + 5 * 1024 * 1024);
-        console.log(`[OfflinePlayback] Freed ${(freed / 1024 / 1024).toFixed(1)}MB`);
+        console.warn('[OfflinePlayback] Storage full — cancelling download to protect existing songs');
+        throw new Error('STORAGE_FULL');
       }
 
       // Write to Cache API
-      let cached = await audioCache.cacheAudio(track.videoId, audioBlob);
-
+      const cached = await audioCache.cacheAudio(track.videoId, audioBlob);
       if (!cached) {
-        // Quota exceeded — evict everything auto-cached and retry once
-        console.warn('[OfflinePlayback] Cache write failed — evicting all auto-cached tracks and retrying');
-        await storageManager.evictToFreeSpace(audioBlob.size + 5 * 1024 * 1024);
-        cached = await audioCache.cacheAudio(track.videoId, audioBlob);
-      }
-
-      if (!cached) {
-        console.error('[OfflinePlayback] audioCache.cacheAudio failed even after eviction');
-        return false;
+        console.error('[OfflinePlayback] Cache write failed (quota exceeded or API error)');
+        throw new Error('STORAGE_FULL');
       }
 
       // Persist metadata
@@ -278,6 +268,9 @@ class OfflinePlaybackService {
       clearTimeout(timeoutId);
       if (e instanceof Error && e.name === 'AbortError') {
         console.error('[OfflinePlayback] Aborted (timeout)');
+        throw new Error('TIMEOUT');
+      } else if (e instanceof Error && e.message === 'STORAGE_FULL') {
+        throw e; // re-throw so DownloadButton can show a storage-full message
       } else {
         console.error('[OfflinePlayback] Download error:', e);
       }
