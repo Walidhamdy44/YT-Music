@@ -47,6 +47,7 @@ class AudioCacheManager {
   /**
    * Store audio blob in cache.
    * Uses a full absolute URL as the cache key — required for iOS Safari PWA.
+   * Handles QuotaExceededError by returning false so caller can evict and retry.
    */
   async cacheAudio(videoId: string, audioBlob: Blob): Promise<boolean> {
     try {
@@ -75,7 +76,15 @@ class AudioCacheManager {
       console.log(`[AudioCache] Cached ${videoId} (${(audioBlob.size / 1024 / 1024).toFixed(2)}MB)`);
       return true;
     } catch (error) {
-      console.error(`[AudioCache] Failed to cache ${videoId}:`, error);
+      const isQuota = error instanceof DOMException && (
+        error.name === 'QuotaExceededError' ||
+        error.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+      );
+      if (isQuota) {
+        console.warn(`[AudioCache] Quota exceeded for ${videoId} — caller should evict and retry`);
+      } else {
+        console.error(`[AudioCache] Failed to cache ${videoId}:`, error);
+      }
       return false;
     }
   }

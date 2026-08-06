@@ -242,17 +242,27 @@ class OfflinePlaybackService {
 
       onProgress?.(90);
 
-      // Make sure there is enough storage
+      // Make sure there is enough storage (evicts old tracks if needed)
       const hasSpace = await storageManager.ensureSpace(audioBlob.size);
       if (!hasSpace) {
-        console.warn('[OfflinePlayback] Not enough storage');
-        return false;
+        console.warn('[OfflinePlayback] Not enough storage — trying aggressive eviction');
+        // Force-evict everything auto-cached to make room
+        const freed = await storageManager.evictToFreeSpace(audioBlob.size + 5 * 1024 * 1024);
+        console.log(`[OfflinePlayback] Freed ${(freed / 1024 / 1024).toFixed(1)}MB`);
       }
 
       // Write to Cache API
-      const cached = await audioCache.cacheAudio(track.videoId, audioBlob);
+      let cached = await audioCache.cacheAudio(track.videoId, audioBlob);
+
       if (!cached) {
-        console.error('[OfflinePlayback] audioCache.cacheAudio failed');
+        // Quota exceeded — evict everything auto-cached and retry once
+        console.warn('[OfflinePlayback] Cache write failed — evicting all auto-cached tracks and retrying');
+        await storageManager.evictToFreeSpace(audioBlob.size + 5 * 1024 * 1024);
+        cached = await audioCache.cacheAudio(track.videoId, audioBlob);
+      }
+
+      if (!cached) {
+        console.error('[OfflinePlayback] audioCache.cacheAudio failed even after eviction');
         return false;
       }
 

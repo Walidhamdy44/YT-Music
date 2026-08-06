@@ -8,8 +8,8 @@
 import { audioCache } from './audioCache';
 import { cacheMetadataStore, type CachedTrackMetadata } from './cacheMetadataStore';
 
-const MIN_FREE_SPACE = 100 * 1024 * 1024; // 100MB - evict when below this
-const WARNING_THRESHOLD = 200 * 1024 * 1024; // 200MB - show warning when below this
+const MIN_FREE_SPACE = 5 * 1024 * 1024;      // 5MB buffer (was 100MB — too large for iOS 50MB quota)
+const WARNING_THRESHOLD = 10 * 1024 * 1024;  // 10MB warning (was 200MB)
 
 export interface StorageStats {
   used: number;       // Bytes used by our cache
