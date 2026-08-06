@@ -7,6 +7,7 @@ import { usePlayerStore } from "@/stores/playerStore";
 import { formatTime } from "@/lib/utils";
 import { CacheStatusIndicator } from "./CacheStatusIndicator";
 import { DownloadButton } from "./DownloadButton";
+import { SaveUrlButton } from "./SaveUrlButton";
 
 interface TrackRowProps {
   track: Track;
@@ -133,7 +134,8 @@ export function TrackRow({ track, tracks, index = 0, showDuration = true, showIn
 
       {/* Cache Status / Download Button */}
       {showCacheStatus && (
-        <div className="flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-0.5 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+          <SaveUrlButton track={track} size="sm" />
           <DownloadButton track={track} variant="icon" size="sm" />
         </div>
       )}

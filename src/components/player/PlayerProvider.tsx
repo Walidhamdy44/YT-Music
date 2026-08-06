@@ -5,6 +5,7 @@ import { usePlayerStore } from "@/stores/playerStore";
 import { useQueueStore } from "@/stores/queueStore";
 import { useOfflineStore } from "@/stores/offlineStore";
 import { offlinePlaybackService } from "@/lib/offlinePlaybackService";
+import { savedUrlStore } from "@/lib/savedUrlStore";
 import { CacheMetadataStore } from "@/lib/cacheMetadataStore";
 import type { Track } from "@/types";
 
@@ -470,7 +471,14 @@ export async function playTrack(track: Track, skipRadio = false) {
       currentBlobUrl = audioUrl; // Track for cleanup
       console.log("[playTrack] Playing from cache:", track.videoId);
     } else {
-      console.log("[playTrack] Playing from network:", track.videoId);
+      // Check for a saved direct URL before falling back to the backend proxy
+      const savedUrl = await savedUrlStore.getValidUrl(track.videoId);
+      if (savedUrl) {
+        audioUrl = savedUrl;
+        console.log("[playTrack] Playing from saved URL (direct CDN):", track.videoId);
+      } else {
+        console.log("[playTrack] Playing from network proxy:", track.videoId);
+      }
     }
   } catch (e) {
     // Fallback to network URL
