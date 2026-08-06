@@ -11,7 +11,7 @@ import { storageManager } from './storageManager';
 import type { Track } from '@/types';
 
 const AUDIO_API_BASE = '/api/audio';       // streaming — for playback
-const DOWNLOAD_API_BASE = '/api/audio';    // same streaming endpoint for download — no server buffering
+const DOWNLOAD_API_BASE = '/api/download'; // buffered  — for caching (returns exact Content-Length)
 
 export interface AudioSource {
   url: string;
