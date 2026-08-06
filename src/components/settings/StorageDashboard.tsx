@@ -201,14 +201,14 @@ export function StorageDashboard() {
           </Button>
         )}
 
-        <Button
+        {/* <Button
           variant="outline"
           size="sm"
           onClick={() => setShowClearConfirm(true)}
           disabled={cachedCount === 0}
         >
           Clear All
-        </Button>
+        </Button> */}
       </div>
 
       {/* Clear All Confirmation */}

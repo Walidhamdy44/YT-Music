@@ -52,6 +52,7 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true);
   const [homeSections, setHomeSections] = useState<HomeSection[]>([]);
   const [homeSectionsLoading, setHomeSectionsLoading] = useState(true);
+  const [listenAgain2, setListenAgain2] = useState<Track[]>([]);
   const { setQueue } = useQueueStore();
 
   useEffect(() => {
@@ -102,9 +103,16 @@ export default function HomePage() {
 
     loadBrowse();
     loadHomeSections();
-  }, []);
 
-  const listenAgain = sections.find((s) => s.type === "listen_again");
+    // Load "Listen Again #2" from the personalised innertube endpoint
+    if (session) {
+      fetch("/api/listen-again")
+        .then((r) => r.ok ? r.json() : { tracks: [] })
+        .then((d) => setListenAgain2(d.tracks || []))
+        .catch(() => {});
+    }
+  }, [session]);
+
   const forgottenFavorites = sections.find((s) => s.type === "forgotten_favorites");
   const albumsForYou = sections.find((s) => s.type === "albums_for_you");
   const quickPicks = sections.find((s) => s.title === "Quick picks");
@@ -124,6 +132,56 @@ export default function HomePage() {
     <>
       <Header />
       <div className="px-4 md:px-8 py-6 space-y-10">
+        {/* Listen Again — personalised from YouTube Music */}
+        {session && listenAgain2.length > 0 && (
+          <section>
+            <div className="flex items-center gap-3 mb-4">
+              {session.user?.image && (
+                <img src={session.user.image} alt="" className="w-8 h-8 rounded-full" />
+              )}
+              <div>
+                {session.user?.name && (
+                  <p className="text-[12px] leading-[16px] font-semibold tracking-[0.05em] text-on-surface-variant uppercase">
+                    {session.user.name}
+                  </p>
+                )}
+                <h2 className="text-[24px] leading-[32px] font-bold tracking-tight text-on-surface">
+                  Listen again
+                </h2>
+              </div>
+            </div>
+
+            <div className="flex gap-4 overflow-x-auto hide-scrollbar pb-2 -mx-4 px-4 md:mx-0 md:px-0">
+              {listenAgain2.map((track, i) => (
+                <div
+                  key={track.id}
+                  className="flex-shrink-0 w-[180px] group cursor-pointer"
+                  onClick={() => handlePlayTrack(track, listenAgain2, i)}
+                >
+                  <div className="relative aspect-square rounded-lg overflow-hidden bg-surface-container-highest mb-2 shadow-md">
+                    {track.thumbnail ? (
+                      <img src={track.thumbnail} alt={track.title} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center bg-surface-container">
+                        <span className="material-symbols-outlined text-on-surface-variant text-[40px]">music_note</span>
+                      </div>
+                    )}
+                    <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                      <div className="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center">
+                        <span className="material-symbols-outlined text-black text-[28px]" style={{ fontVariationSettings: "'FILL' 1" }}>
+                          play_arrow
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-[14px] leading-[20px] text-on-surface font-semibold truncate">{track.title}</p>
+                  <p className="text-[12px] leading-[16px] text-on-surface-variant truncate">Song • {track.artist}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         {/* Fresh finds, old favorites — Personalized YT Music mixes (only when signed in) */}
         {session && homeSectionsLoading ? (
           <section>
@@ -209,70 +267,6 @@ export default function HomePage() {
             </button>
           ))}
         </div>
-
-        {/* Listen Again Section - Horizontal cards like real YT Music */}
-        {listenAgain && listenAgain.items.length > 0 && (
-          <section>
-            <div className="flex items-center gap-3 mb-4">
-              {session?.user?.image && (
-                <img
-                  src={session.user.image}
-                  alt=""
-                  className="w-8 h-8 rounded-full"
-                />
-              )}
-              <div>
-                {session?.user?.name && (
-                  <p className="text-[12px] leading-[16px] font-semibold tracking-[0.05em] text-on-surface-variant uppercase">
-                    {session.user.name}
-                  </p>
-                )}
-                <h2 className="text-[24px] leading-[32px] font-bold tracking-tight text-on-surface">
-                  Listen again
-                </h2>
-              </div>
-            </div>
-
-            {/* Horizontal scroll cards */}
-            <div className="flex gap-4 overflow-x-auto hide-scrollbar pb-2 -mx-4 px-4 md:mx-0 md:px-0">
-              {listenAgain.items.map((track, i) => (
-                <div
-                  key={track.id}
-                  className="flex-shrink-0 w-[180px] group cursor-pointer"
-                  onClick={() => handlePlayTrack(track, listenAgain.items, i)}
-                >
-                  <div className="relative aspect-square rounded-lg overflow-hidden bg-surface-container-highest mb-2 shadow-md">
-                    {track.thumbnail ? (
-                      <img
-                        src={track.thumbnail}
-                        alt={track.title}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center bg-surface-container">
-                        <span className="material-symbols-outlined text-on-surface-variant text-[40px]">music_note</span>
-                      </div>
-                    )}
-                    {/* Play overlay */}
-                    <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                      <div className="w-12 h-12 rounded-full bg-white/90 flex items-center justify-center">
-                        <span className="material-symbols-outlined text-black text-[28px]" style={{ fontVariationSettings: "'FILL' 1" }}>
-                          play_arrow
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                  <p className="text-[14px] leading-[20px] text-on-surface font-semibold truncate">
-                    {track.title}
-                  </p>
-                  <p className="text-[12px] leading-[16px] text-on-surface-variant truncate">
-                    Song • {track.artist}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
 
         {/* Quick Picks Section */}
         {(quickPicks || loading) && (
