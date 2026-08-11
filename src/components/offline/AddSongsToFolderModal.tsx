@@ -71,7 +71,7 @@ export function AddSongsToFolderModal({
     >
       <div
         className="bg-surface rounded-2xl shadow-2xl w-full max-w-lg flex flex-col"
-        style={{ maxHeight: "85vh" }}
+        style={{ maxHeight: "calc(100vh - 100px)" }}  /* 100px clears the player bar + status bar */
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -175,8 +175,8 @@ export function AddSongsToFolderModal({
           )}
         </div>
 
-        {/* Footer */}
-        <div className="p-4 border-t border-outline-variant/20 flex gap-3">
+        {/* Footer — sits above the player bar (~80px) */}
+        <div className="p-4 pb-24 border-t border-outline-variant/20 flex gap-3 flex-shrink-0">
           <Button variant="outline" size="sm" onClick={onCancel} className="flex-1">
             Cancel
           </Button>
