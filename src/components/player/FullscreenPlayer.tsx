@@ -6,7 +6,7 @@ import { useUIStore } from "@/stores/uiStore";
 import { useLibraryStore } from "@/stores/libraryStore";
 import { playTrack, togglePlayback, seekTo, handleShuffle } from "./PlayerProvider";
 import { formatTime } from "@/lib/utils";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import type { Track } from "@/types";
 
 const queueTabs = ["UP NEXT", "LYRICS", "RELATED"];
@@ -32,6 +32,39 @@ export function FullscreenPlayer() {
   const [relatedLoading, setRelatedLoading] = useState(false);
   const [rating, setRating] = useState<"like" | "dislike" | "none">("none");
   const { toggleSaveTrack, isTrackSaved } = useLibraryStore();
+
+  // Swipe-down to close
+  const touchStartY = useRef<number | null>(null);
+  const touchDeltaY = useRef(0);
+  const [dragOffset, setDragOffset] = useState(0);
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    touchStartY.current = e.touches[0].clientY;
+    touchDeltaY.current = 0;
+  }, []);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    if (touchStartY.current === null) return;
+    const delta = e.touches[0].clientY - touchStartY.current;
+    // Only allow downward drag
+    if (delta > 0) {
+      touchDeltaY.current = delta;
+      setDragOffset(delta);
+    }
+  }, []);
+
+  const handleTouchEnd = useCallback(() => {
+    // Close if dragged more than 120px down
+    if (touchDeltaY.current > 120) {
+      setDragOffset(0);
+      setFullscreenPlayer(false);
+    } else {
+      // Snap back
+      setDragOffset(0);
+    }
+    touchStartY.current = null;
+    touchDeltaY.current = 0;
+  }, [setFullscreenPlayer]);
 
   // Fetch rating when track changes
   useEffect(() => {
@@ -99,7 +132,16 @@ export function FullscreenPlayer() {
   };
 
   return (
-    <div className="fixed inset-0 z-[100] bg-background flex flex-col animate-in slide-in-from-bottom duration-300">
+    <div
+      className="fixed inset-0 z-[100] bg-background flex flex-col animate-in slide-in-from-bottom duration-300"
+      style={{
+        transform: dragOffset > 0 ? `translateY(${dragOffset}px)` : undefined,
+        transition: dragOffset === 0 ? "transform 0.2s ease" : "none",
+      }}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+    >
       {/* Top bar with tabs - add safe area padding for iOS notch */}
       <div className="flex items-center justify-between px-4 md:px-6 h-12 md:h-14 pt-[env(safe-area-inset-top)] border-b border-outline-variant/10 flex-shrink-0">
         <button
@@ -296,7 +338,7 @@ export function FullscreenPlayer() {
       <div className="border-t border-outline-variant/10 bg-surface-container/80 backdrop-blur-xl flex-shrink-0 pb-safe">
         {/* Progress bar */}
         <div
-          className="h-1 w-full bg-surface-container-highest cursor-pointer group"
+          className="h-3 w-full bg-surface-container-highest cursor-pointer group"
           onClick={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
             const percent = (e.clientX - rect.left) / rect.width;

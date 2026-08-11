@@ -57,7 +57,7 @@ export function MiniPlayer() {
     <div className="fixed bottom-16 md:bottom-0 left-0 w-full z-50 md:pl-[240px] bg-surface-container-high/90 backdrop-blur-xl border-t border-white/5 transition-all">
       {/* Progress bar */}
       <div
-        className="h-1 w-full bg-surface-container-highest cursor-pointer group progress-bar-container relative"
+        className="h-2 w-full bg-surface-container-highest cursor-pointer group progress-bar-container relative"
         onClick={(e) => {
           if (isLoading) return;
           const rect = e.currentTarget.getBoundingClientRect();
@@ -213,21 +213,6 @@ export function MiniPlayer() {
             onChange={(e) => setVolume(parseFloat(e.target.value))}
             className="w-24 h-1 bg-surface-container-highest rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-on-surface-variant hover:[&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:transition-colors"
           />
-        </div>
-        {/* Mobile volume buttons */}
-        <div className="flex md:hidden items-center gap-1">
-          <button
-            onClick={() => setVolume(Math.max(0, volume - 0.1))}
-            className="text-on-surface-variant hover:text-on-surface p-1"
-          >
-            <span className="material-symbols-outlined text-[22px]">volume_down</span>
-          </button>
-          <button
-            onClick={() => setVolume(Math.min(1, volume + 0.1))}
-            className="text-on-surface-variant hover:text-on-surface p-1"
-          >
-            <span className="material-symbols-outlined text-[22px]">volume_up</span>
-          </button>
         </div>
       </div>
     </div>

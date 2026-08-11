@@ -14,7 +14,6 @@ export default function OfflinePage() {
 
     const handleOnline = () => {
       setIsOnline(true);
-      // Redirect to home when back online
       setTimeout(() => router.push("/"), 1000);
     };
     const handleOffline = () => setIsOnline(false);
@@ -48,7 +47,7 @@ export default function OfflinePage() {
         </div>
 
         <div className="space-y-2">
-          <h1 className="text-2xl font-bold text-on-surface">You're Offline</h1>
+          <h1 className="text-2xl font-bold text-on-surface">You&apos;re Offline</h1>
           <p className="text-on-surface-variant">
             Check your internet connection to browse and stream music.
           </p>
@@ -75,7 +74,7 @@ export default function OfflinePage() {
             </Button>
 
             <p className="text-sm text-on-surface-variant">
-              You can still play songs you've downloaded for offline listening.
+              You can still play songs you&apos;ve downloaded for offline listening.
             </p>
           </div>
         )}

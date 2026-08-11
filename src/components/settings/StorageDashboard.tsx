@@ -1,10 +1,22 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { HardDrive, Trash2, Search, CheckCircle2, AlertTriangle, Shuffle } from "lucide-react";
+import { useState, useCallback, useEffect } from "react";
+import {
+  HardDrive, Trash2, Search, CheckCircle2, AlertTriangle, Shuffle,
+  FolderPlus, FolderOpen, Pencil, FolderX, Play, ListPlus,
+} from "lucide-react";
 import { useOfflineStore } from "@/stores/offlineStore";
+import { useFolderStore } from "@/stores/folderStore";
 import { useStorageStats, useRefreshStorageStats } from "@/hooks/useStorageStats";
 import { storageManager, StorageManager } from "@/lib/storageManager";
+import {
+  getAllFolders, createFolder, updateFolder as updateFolderDb,
+  deleteFolder as deleteFolderDb, addSongToFolder, removeSongFromFolder,
+  getFoldersForSong, type OfflineFolder,
+} from "@/lib/offlineFolderStore";
+import { FolderDialog } from "@/components/offline/FolderDialog";
+import { MoveToFolderSheet } from "@/components/offline/MoveToFolderSheet";
+import { AddSongsToFolderModal } from "@/components/offline/AddSongsToFolderModal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useQueueStore } from "@/stores/queueStore";
@@ -14,52 +26,104 @@ import type { CachedTrackMetadata } from "@/lib/cacheMetadataStore";
 import type { Track } from "@/types";
 
 export function StorageDashboard() {
-  const { used, quota, cachedCount, usedFormatted, quotaFormatted, percentUsed, isLow } = useStorageStats();
-  const cachedTracks = useOfflineStore((state) => state.cachedTracks);
-  const removeCachedTrack = useOfflineStore((state) => state.removeCachedTrack);
+  const { cachedCount, usedFormatted, quotaFormatted, percentUsed, isLow } = useStorageStats();
+  const cachedTracks = useOfflineStore((s) => s.cachedTracks);
+  const removeCachedTrack = useOfflineStore((s) => s.removeCachedTrack);
   const refreshStats = useRefreshStorageStats();
+
+  const { folders, setFolders, addFolder, updateFolder: updateFolderStore, removeFolder } = useFolderStore();
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedTracks, setSelectedTracks] = useState<Set<string>>(new Set());
   const [isClearing, setIsClearing] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
-  // Get sorted list of cached tracks
-  const sortedTracks = Array.from(cachedTracks.values()).sort(
-    (a, b) => b.cachedAt - a.cachedAt
-  );
+  // Folder state
+  const [openFolderId, setOpenFolderId] = useState<string | null>(null);
+  const [showCreateFolder, setShowCreateFolder] = useState(false);
+  const [editingFolder, setEditingFolder] = useState<OfflineFolder | null>(null);
+  const [deletingFolder, setDeletingFolder] = useState<OfflineFolder | null>(null);
+  const [moveTrack, setMoveTrack] = useState<CachedTrackMetadata | null>(null);
+  const [moveTrackFolderIds, setMoveTrackFolderIds] = useState<string[]>([]);
+  const [showAddSongsModal, setShowAddSongsModal] = useState(false);
 
-  // Filter by search query
-  const filteredTracks = sortedTracks.filter((track) => {
-    if (!searchQuery) return true;
-    const query = searchQuery.toLowerCase();
-    return (
-      track.title.toLowerCase().includes(query) ||
-      track.artist.toLowerCase().includes(query)
-    );
-  });
+  const refreshFolders = useCallback(async () => {
+    const all = await getAllFolders();
+    setFolders(all);
+  }, [setFolders]);
 
-  // Toggle track selection
-  const toggleSelect = (videoId: string) => {
-    const newSelected = new Set(selectedTracks);
-    if (newSelected.has(videoId)) {
-      newSelected.delete(videoId);
-    } else {
-      newSelected.add(videoId);
-    }
-    setSelectedTracks(newSelected);
+  useEffect(() => { refreshFolders(); }, [refreshFolders]);
+
+  // ── derived ──────────────────────────────────────────────────────────────
+  const openFolder = folders.find((f) => f.id === openFolderId) ?? null;
+  const sortedTracks = Array.from(cachedTracks.values()).sort((a, b) => b.cachedAt - a.cachedAt);
+
+  const displayTracks = openFolder
+    ? (openFolder.videoIds ?? []).map((id) => cachedTracks.get(id)).filter((t): t is CachedTrackMetadata => !!t)
+    : sortedTracks.filter((t) => {
+        if (!searchQuery) return true;
+        const q = searchQuery.toLowerCase();
+        return t.title.toLowerCase().includes(q) || t.artist.toLowerCase().includes(q);
+      });
+
+  // ── folder CRUD ──────────────────────────────────────────────────────────
+  const handleCreateFolder = async (name: string, color: string) => {
+    const folder = await createFolder(name, color);
+    addFolder(folder);
+    setShowCreateFolder(false);
   };
 
-  // Select all filtered tracks
-  const selectAll = () => {
-    if (selectedTracks.size === filteredTracks.length) {
-      setSelectedTracks(new Set());
-    } else {
-      setSelectedTracks(new Set(filteredTracks.map((t) => t.videoId)));
-    }
+  const handleEditFolder = async (name: string, color: string) => {
+    if (!editingFolder) return;
+    const updated = await updateFolderDb(editingFolder.id, { name, color });
+    if (updated) updateFolderStore(updated);
+    setEditingFolder(null);
   };
 
-  // Delete selected tracks
+  const handleDeleteFolder = async () => {
+    if (!deletingFolder) return;
+    await deleteFolderDb(deletingFolder.id);
+    removeFolder(deletingFolder.id);
+    if (openFolderId === deletingFolder.id) setOpenFolderId(null);
+    setDeletingFolder(null);
+  };
+
+  // ── move-to-folder ───────────────────────────────────────────────────────
+  const openMoveSheet = async (track: CachedTrackMetadata) => {
+    const inFolders = await getFoldersForSong(track.videoId);
+    setMoveTrackFolderIds(inFolders.map((f) => f.id));
+    setMoveTrack(track);
+  };
+
+  const handleAddToFolder = async (folderId: string) => {
+    if (!moveTrack) return;
+    await addSongToFolder(folderId, moveTrack.videoId);
+    await refreshFolders();
+    setMoveTrackFolderIds((p) => p.includes(folderId) ? p : [...p, folderId]);
+  };
+
+  // Bulk add: update folder videoIds to exactly the selected set
+  const handleBulkAddSongs = async (selectedIds: string[]) => {
+    if (!openFolder) return;
+    await updateFolderDb(openFolder.id, { videoIds: selectedIds });
+    await refreshFolders();
+    setShowAddSongsModal(false);
+  };
+  const handleRemoveFromFolder = async (folderId: string) => {
+    if (!moveTrack) return;
+    await removeSongFromFolder(folderId, moveTrack.videoId);
+    await refreshFolders();
+    setMoveTrackFolderIds((p) => p.filter((id) => id !== folderId));
+  };
+
+  // ── delete songs ─────────────────────────────────────────────────────────
+  const deleteTrack = async (videoId: string) => {
+    await storageManager.deleteTrack(videoId);
+    removeCachedTrack(videoId);
+    await refreshStats();
+    await refreshFolders();
+  };
+
   const deleteSelected = async () => {
     for (const videoId of selectedTracks) {
       await storageManager.deleteTrack(videoId);
@@ -67,9 +131,9 @@ export function StorageDashboard() {
     }
     setSelectedTracks(new Set());
     await refreshStats();
+    await refreshFolders();
   };
 
-  // Clear all cache
   const clearAllCache = async () => {
     setIsClearing(true);
     try {
@@ -82,178 +146,184 @@ export function StorageDashboard() {
     }
   };
 
-  // Delete single track
-  const deleteTrack = async (videoId: string) => {
-    await storageManager.deleteTrack(videoId);
-    removeCachedTrack(videoId);
-    await refreshStats();
+  // ── selection ────────────────────────────────────────────────────────────
+  const toggleSelect = (videoId: string) => {
+    const s = new Set(selectedTracks);
+    s.has(videoId) ? s.delete(videoId) : s.add(videoId);
+    setSelectedTracks(s);
   };
 
-  // Calculate selected size
-  const selectedSize = Array.from(selectedTracks).reduce((sum, videoId) => {
-    const track = cachedTracks.get(videoId);
-    return sum + (track?.fileSize || 0);
-  }, 0);
+  const selectAll = () => {
+    if (selectedTracks.size === displayTracks.length) setSelectedTracks(new Set());
+    else setSelectedTracks(new Set(displayTracks.map((t) => t.videoId)));
+  };
 
-  // Shuffle play all cached songs
+  const selectedSize = Array.from(selectedTracks).reduce((sum, id) => sum + (cachedTracks.get(id)?.fileSize || 0), 0);
+
+  // ── playback ─────────────────────────────────────────────────────────────
   const shufflePlayAll = () => {
-    if (sortedTracks.length === 0) return;
-    
-    // Convert cached metadata to Track objects
-    const tracks: Track[] = sortedTracks.map((meta) => ({
-      id: meta.videoId,
-      videoId: meta.videoId,
-      title: meta.title,
-      artist: meta.artist,
-      thumbnail: meta.thumbnail,
-      duration: meta.duration,
-    }));
-
-    // Shuffle the tracks (Fisher-Yates shuffle)
+    if (!sortedTracks.length) return;
+    const tracks: Track[] = sortedTracks.map((m) => ({ id: m.videoId, videoId: m.videoId, title: m.title, artist: m.artist, thumbnail: m.thumbnail, duration: m.duration }));
     const shuffled = [...tracks];
     for (let i = shuffled.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
-
-    // Set queue and play first track
     useQueueStore.getState().setQueue(shuffled, 0);
-    usePlayerStore.getState().toggleShuffle(); // Enable shuffle mode
-    if (!usePlayerStore.getState().isShuffled) {
-      usePlayerStore.getState().toggleShuffle();
-    }
+    usePlayerStore.getState().toggleShuffle();
+    if (!usePlayerStore.getState().isShuffled) usePlayerStore.getState().toggleShuffle();
     playTrack(shuffled[0], true);
+  };
+
+  const playFolder = (folder: OfflineFolder) => {
+    const tracks = (folder.videoIds ?? [])
+      .map((id) => cachedTracks.get(id))
+      .filter((t): t is CachedTrackMetadata => !!t)
+      .map((m): Track => ({ id: m.videoId, videoId: m.videoId, title: m.title, artist: m.artist, thumbnail: m.thumbnail, duration: m.duration }));
+    if (!tracks.length) return;
+    useQueueStore.getState().setQueue(tracks, 0);
+    playTrack(tracks[0], true);
   };
 
   return (
     <div className="max-w-3xl mx-auto p-6 space-y-6">
       <h1 className="text-2xl font-bold">Offline Storage</h1>
 
-      {/* Storage Usage */}
+      {/* ── Storage bar ──────────────────────────────────────────────── */}
       <div className="bg-surface-container rounded-lg p-4 space-y-3">
         <div className="flex items-center gap-3">
           <HardDrive className="text-primary" size={24} />
           <div className="flex-1">
             <p className="font-medium">Storage Used</p>
-            <p className="text-sm text-on-surface-variant">
-              {cachedCount} song{cachedCount !== 1 ? "s" : ""} cached
-            </p>
+            <p className="text-sm text-on-surface-variant">{cachedCount} song{cachedCount !== 1 ? "s" : ""} cached</p>
           </div>
           <div className="text-right">
             <p className="font-medium">{usedFormatted}</p>
             <p className="text-sm text-on-surface-variant">of {quotaFormatted}</p>
           </div>
         </div>
-
-        {/* Progress bar */}
         <div className="h-2 bg-surface-container-high rounded-full overflow-hidden">
-          <div
-            className={`h-full transition-all ${
-              isLow ? "bg-amber-500" : "bg-primary"
-            }`}
-            style={{ width: `${Math.min(percentUsed, 100)}%` }}
-          />
+          <div className={`h-full transition-all ${isLow ? "bg-amber-500" : "bg-primary"}`} style={{ width: `${Math.min(percentUsed, 100)}%` }} />
         </div>
-
         {isLow && (
           <div className="flex items-center gap-2 text-amber-600 text-sm">
             <AlertTriangle size={16} />
             <span>Storage is running low. Consider removing some cached songs.</span>
           </div>
         )}
-
-        {/* Shuffle Play Button */}
         {cachedCount > 0 && (
-          <Button
-            onClick={shufflePlayAll}
-            className="w-full gap-2 mt-2"
-            size="lg"
-          >
+          <Button onClick={shufflePlayAll} className="w-full gap-2 mt-2" size="lg">
             <Shuffle size={20} />
             Shuffle Play All ({cachedCount} songs)
           </Button>
         )}
       </div>
 
-      {/* Actions */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex-1 min-w-[200px]">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant" size={16} />
-            <Input
-              placeholder="Search cached songs..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9"
-            />
+      {/* ── Folders section ──────────────────────────────────────────── */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold text-on-surface">
+            {openFolder ? (
+              <button onClick={() => setOpenFolderId(null)} className="flex items-center gap-2 hover:text-primary transition-colors">
+                <span className="text-on-surface-variant text-sm">Folders</span>
+                <span className="text-on-surface-variant mx-1">/</span>
+                <FolderOpen size={15} style={{ color: openFolder.color }} />
+                <span style={{ color: openFolder.color }}>{openFolder.name}</span>
+              </button>
+            ) : "Folders"}
+          </h2>
+          <div className="flex items-center gap-1">
+            {openFolder ? (
+              <>
+                <button onClick={() => playFolder(openFolder)} className="p-1.5 rounded-full hover:bg-surface-container transition-colors" title="Play all"><Play size={14} className="text-on-surface-variant" /></button>
+                <button onClick={() => setShowAddSongsModal(true)} className="p-1.5 rounded-full hover:bg-surface-container transition-colors" title="Add songs to folder"><ListPlus size={14} className="text-on-surface-variant" /></button>
+                <button onClick={() => setEditingFolder(openFolder)} className="p-1.5 rounded-full hover:bg-surface-container transition-colors" title="Rename"><Pencil size={14} className="text-on-surface-variant" /></button>
+                <button onClick={() => setDeletingFolder(openFolder)} className="p-1.5 rounded-full hover:bg-destructive/10 text-on-surface-variant hover:text-destructive transition-colors" title="Delete folder"><Trash2 size={14} /></button>
+              </>
+            ) : (
+              <button onClick={() => setShowCreateFolder(true)} className="flex items-center gap-1.5 text-xs text-primary hover:underline">
+                <FolderPlus size={14} /> New folder
+              </button>
+            )}
           </div>
         </div>
 
-        {selectedTracks.size > 0 && (
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={deleteSelected}
-            className="gap-2"
-          >
-            <Trash2 size={14} />
-            Delete {selectedTracks.size} ({StorageManager.formatBytes(selectedSize)})
-          </Button>
+        {/* Folder grid */}
+        {!openFolder && folders.length > 0 && (
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {folders.map((folder) => {
+              const videoIds = folder.videoIds ?? [];
+              const coverTracks = videoIds.slice(0, 4).map((id) => cachedTracks.get(id)).filter(Boolean) as CachedTrackMetadata[];
+              return (
+                <FolderCard key={folder.id} folder={folder} coverTracks={coverTracks}
+                  onClick={() => setOpenFolderId(folder.id)}
+                  onEdit={() => setEditingFolder(folder)}
+                  onDelete={() => setDeletingFolder(folder)}
+                  onPlay={() => playFolder(folder)} />
+              );
+            })}
+          </div>
         )}
 
-        {/* <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setShowClearConfirm(true)}
-          disabled={cachedCount === 0}
-        >
-          Clear All
-        </Button> */}
+        {openFolder && displayTracks.length === 0 && (
+          <div className="text-center py-8 text-on-surface-variant">
+            <FolderX size={36} className="mx-auto mb-2 opacity-40" />
+            <p className="text-sm">No songs in this folder yet</p>
+            <button
+              onClick={() => setShowAddSongsModal(true)}
+              className="mt-3 inline-flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-full border border-outline-variant/40 hover:bg-surface-container transition-colors"
+              style={{ color: openFolder.color }}
+            >
+              <ListPlus size={15} />
+              Add new items here!
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Clear All Confirmation */}
+      {/* ── Search / bulk actions (hidden inside folder view) ────────── */}
+      {!openFolder && (
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex-1 min-w-[200px]">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant" size={16} />
+              <Input placeholder="Search cached songs..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-9" />
+            </div>
+          </div>
+          {selectedTracks.size > 0 && (
+            <Button variant="destructive" size="sm" onClick={deleteSelected} className="gap-2">
+              <Trash2 size={14} />
+              Delete {selectedTracks.size} ({StorageManager.formatBytes(selectedSize)})
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={() => setShowClearConfirm(true)} disabled={cachedCount === 0}>Clear All</Button>
+        </div>
+      )}
+
+      {/* Clear All confirmation */}
       {showClearConfirm && (
         <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-4">
           <p className="font-medium text-destructive mb-2">Clear all cached songs?</p>
-          <p className="text-sm text-on-surface-variant mb-4">
-            This will remove {cachedCount} song{cachedCount !== 1 ? "s" : ""} and free up {usedFormatted}.
-            This action cannot be undone.
-          </p>
+          <p className="text-sm text-on-surface-variant mb-4">This will remove {cachedCount} song{cachedCount !== 1 ? "s" : ""} and free up {usedFormatted}. This action cannot be undone.</p>
           <div className="flex gap-2">
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={clearAllCache}
-              disabled={isClearing}
-            >
-              {isClearing ? "Clearing..." : "Yes, Clear All"}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowClearConfirm(false)}
-            >
-              Cancel
-            </Button>
+            <Button variant="destructive" size="sm" onClick={clearAllCache} disabled={isClearing}>{isClearing ? "Clearing..." : "Yes, Clear All"}</Button>
+            <Button variant="outline" size="sm" onClick={() => setShowClearConfirm(false)}>Cancel</Button>
           </div>
         </div>
       )}
 
-      {/* Cached Songs List */}
+      {/* ── Song list ────────────────────────────────────────────────── */}
       <div className="space-y-2">
-        {filteredTracks.length > 0 && (
+        {displayTracks.length > 0 && !openFolder && (
           <div className="flex items-center justify-between text-sm text-on-surface-variant px-2">
-            <button
-              onClick={selectAll}
-              className="hover:text-on-surface transition-colors"
-            >
-              {selectedTracks.size === filteredTracks.length ? "Deselect All" : "Select All"}
+            <button onClick={selectAll} className="hover:text-on-surface transition-colors">
+              {selectedTracks.size === displayTracks.length ? "Deselect All" : "Select All"}
             </button>
-            <span>{filteredTracks.length} song{filteredTracks.length !== 1 ? "s" : ""}</span>
+            <span>{displayTracks.length} song{displayTracks.length !== 1 ? "s" : ""}</span>
           </div>
         )}
 
-        {filteredTracks.length === 0 ? (
+        {displayTracks.length === 0 && !openFolder ? (
           <div className="text-center py-12 text-on-surface-variant">
             {cachedCount === 0 ? (
               <>
@@ -267,108 +337,151 @@ export function StorageDashboard() {
           </div>
         ) : (
           <div className="space-y-1">
-            {filteredTracks.map((track) => (
+            {displayTracks.map((track) => (
               <CachedTrackItem
                 key={track.videoId}
                 track={track}
                 isSelected={selectedTracks.has(track.videoId)}
                 onSelect={() => toggleSelect(track.videoId)}
                 onDelete={() => deleteTrack(track.videoId)}
+                onAddToFolder={() => openMoveSheet(track)}
+                showCheckbox={!openFolder}
+                onRemoveFromFolder={openFolder ? async () => {
+                  await removeSongFromFolder(openFolder.id, track.videoId);
+                  await refreshFolders();
+                } : undefined}
               />
             ))}
           </div>
         )}
       </div>
+
+      {/* ── Dialogs & sheets ─────────────────────────────────────────── */}
+      {showCreateFolder && <FolderDialog title="New folder" onConfirm={handleCreateFolder} onCancel={() => setShowCreateFolder(false)} />}
+
+      {editingFolder && (
+        <FolderDialog title="Edit folder" initialName={editingFolder.name} initialColor={editingFolder.color}
+          onConfirm={handleEditFolder} onCancel={() => setEditingFolder(null)} />
+      )}
+
+      {deletingFolder && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setDeletingFolder(null)}>
+          <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-sm p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-semibold">Delete folder?</h3>
+            <p className="text-sm text-on-surface-variant">&ldquo;{deletingFolder.name}&rdquo; will be deleted. Your downloaded songs won&apos;t be affected.</p>
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" size="sm" onClick={() => setDeletingFolder(null)}>Cancel</Button>
+              <Button variant="destructive" size="sm" onClick={handleDeleteFolder}>Delete</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {moveTrack && (
+        <MoveToFolderSheet track={moveTrack} currentFolderIds={moveTrackFolderIds}
+          onAdd={handleAddToFolder} onRemove={handleRemoveFromFolder}
+          onCreateNew={() => { setMoveTrack(null); setShowCreateFolder(true); }}
+          onClose={() => setMoveTrack(null)} />
+      )}
+
+      {showAddSongsModal && openFolder && (
+        <AddSongsToFolderModal
+          allTracks={sortedTracks}
+          existingVideoIds={openFolder.videoIds ?? []}
+          folderName={openFolder.name}
+          folderColor={openFolder.color}
+          onConfirm={handleBulkAddSongs}
+          onCancel={() => setShowAddSongsModal(false)}
+        />
+      )}
     </div>
   );
 }
 
-// Individual track item
-function CachedTrackItem({
-  track,
-  isSelected,
-  onSelect,
-  onDelete,
-}: {
-  track: CachedTrackMetadata;
-  isSelected: boolean;
-  onSelect: () => void;
-  onDelete: () => void;
+// ── Folder card ───────────────────────────────────────────────────────────────
+function FolderCard({ folder, coverTracks, onClick, onEdit, onDelete, onPlay }: {
+  folder: OfflineFolder; coverTracks: CachedTrackMetadata[];
+  onClick: () => void; onEdit: () => void; onDelete: () => void; onPlay: () => void;
 }) {
-  const formatDate = (timestamp: number) => {
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diffDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
-    
-    if (diffDays === 0) return "Today";
-    if (diffDays === 1) return "Yesterday";
-    if (diffDays < 7) return `${diffDays} days ago`;
-    return date.toLocaleDateString();
-  };
-
   return (
-    <div
-      className={`flex items-center gap-3 p-2 rounded-lg transition-colors ${
-        isSelected ? "bg-primary/10" : "hover:bg-surface-container"
-      }`}
-    >
-      {/* Checkbox */}
-      <button
-        onClick={onSelect}
-        className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
-          isSelected
-            ? "bg-primary border-primary"
-            : "border-on-surface-variant hover:border-primary"
-        }`}
-      >
-        {isSelected && <CheckCircle2 size={14} className="text-on-primary" />}
-      </button>
-
-      {/* Thumbnail */}
-      <div className="w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-surface-container-high">
-        {track.thumbnail ? (
-          <img
-            src={track.thumbnail}
-            alt={track.title}
-            className="w-full h-full object-cover"
-          />
+    <div className="rounded-xl overflow-hidden bg-surface-container cursor-pointer hover:bg-surface-container-high transition-colors group relative" onClick={onClick}>
+      <div className="aspect-square">
+        {coverTracks.length === 0 ? (
+          <div className="w-full h-full flex items-center justify-center" style={{ backgroundColor: folder.color + "22" }}>
+            <FolderOpen size={36} style={{ color: folder.color }} />
+          </div>
+        ) : coverTracks.length === 1 ? (
+          <img src={coverTracks[0].thumbnail} alt="" className="w-full h-full object-cover" />
         ) : (
-          <div className="w-full h-full flex items-center justify-center">
-            <span className="material-symbols-outlined text-on-surface-variant text-[16px]">
-              music_note
-            </span>
+          <div className="grid grid-cols-2 h-full">
+            {coverTracks.slice(0, 4).map((t) => <img key={t.videoId} src={t.thumbnail} alt="" className="w-full h-full object-cover" />)}
           </div>
         )}
       </div>
+      <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <button onClick={(e) => { e.stopPropagation(); onPlay(); }} className="w-6 h-6 rounded-full bg-black/60 flex items-center justify-center hover:bg-black/80"><Play size={10} className="text-white" /></button>
+        <button onClick={(e) => { e.stopPropagation(); onEdit(); }} className="w-6 h-6 rounded-full bg-black/60 flex items-center justify-center hover:bg-black/80"><Pencil size={10} className="text-white" /></button>
+        <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="w-6 h-6 rounded-full bg-black/60 flex items-center justify-center hover:bg-black/80"><Trash2 size={10} className="text-white" /></button>
+      </div>
+      <div className="p-2.5">
+        <p className="text-sm font-semibold truncate" style={{ color: folder.color }}>{folder.name}</p>
+        <p className="text-xs text-on-surface-variant">{(folder.videoIds ?? []).length} song{(folder.videoIds ?? []).length !== 1 ? "s" : ""}</p>
+      </div>
+    </div>
+  );
+}
 
-      {/* Info */}
+// ── Track item ────────────────────────────────────────────────────────────────
+function CachedTrackItem({ track, isSelected, onSelect, onDelete, onAddToFolder, showCheckbox = true, onRemoveFromFolder }: {
+  track: CachedTrackMetadata; isSelected: boolean;
+  onSelect: () => void; onDelete: () => void; onAddToFolder: () => void;
+  showCheckbox?: boolean; onRemoveFromFolder?: () => void;
+}) {
+  const formatDate = (ts: number) => {
+    const d = Math.floor((Date.now() - ts) / 86400000);
+    if (d === 0) return "Today";
+    if (d === 1) return "Yesterday";
+    if (d < 7) return `${d} days ago`;
+    return new Date(ts).toLocaleDateString();
+  };
+
+  return (
+    <div className={`flex items-center gap-3 p-2 rounded-lg transition-colors ${isSelected ? "bg-primary/10" : "hover:bg-surface-container"}`}>
+      {showCheckbox && (
+        <button onClick={onSelect} className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors flex-shrink-0 ${isSelected ? "bg-primary border-primary" : "border-on-surface-variant hover:border-primary"}`}>
+          {isSelected && <CheckCircle2 size={14} className="text-on-primary" />}
+        </button>
+      )}
+      <div className="w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-surface-container-high">
+        {track.thumbnail ? (
+          <img src={track.thumbnail} alt={track.title} className="w-full h-full object-cover" />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <span className="material-symbols-outlined text-on-surface-variant text-[16px]">music_note</span>
+          </div>
+        )}
+      </div>
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium truncate">{track.title}</p>
         <p className="text-xs text-on-surface-variant truncate">{track.artist}</p>
       </div>
-
-      {/* Meta */}
       <div className="text-right text-xs text-on-surface-variant hidden sm:block">
         <p>{StorageManager.formatBytes(track.fileSize)}</p>
         <p>{formatDate(track.cachedAt)}</p>
       </div>
-
-      {/* Manual download badge */}
-      {track.isManualDownload && (
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary">
-          Downloaded
-        </span>
+      {track.isManualDownload && <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary">Downloaded</span>}
+      {/* Add to folder — always visible (no hover-only on mobile) */}
+      <button onClick={onAddToFolder} className="p-1.5 rounded-full bg-surface-container hover:bg-surface-container-high active:bg-surface-container-high text-on-surface-variant hover:text-primary active:text-primary transition-colors" title="Add to folder">
+        <FolderPlus size={15} />
+      </button>
+      {/* Remove from folder (inside folder view) */}
+      {onRemoveFromFolder && (
+        <button onClick={onRemoveFromFolder} className="p-1.5 rounded-full hover:bg-surface-container-high text-on-surface-variant hover:text-amber-500 transition-colors" title="Remove from this folder">
+          <FolderX size={15} />
+        </button>
       )}
-
-      {/* Delete button */}
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete();
-        }}
-        className="p-1.5 rounded-full hover:bg-destructive/10 text-on-surface-variant hover:text-destructive transition-colors"
-        title="Remove from cache"
-      >
+      {/* Delete */}
+      <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="p-1.5 rounded-full hover:bg-destructive/10 text-on-surface-variant hover:text-destructive transition-colors" title="Remove from cache">
         <Trash2 size={16} />
       </button>
     </div>

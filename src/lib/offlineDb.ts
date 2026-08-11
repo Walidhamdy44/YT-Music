@@ -1,17 +1,15 @@
 /**
  * offlineDb — single IDBDatabase instance shared by all offline stores.
  *
- * Having one place that opens the DB ensures `onupgradeneeded` fires exactly
- * once and all object stores are created in the correct version.
- *
  * Current schema
  *   v1: cached-tracks (audio file metadata)
  *   v2: no structural change (version bump only)
  *   v3: saved-urls (direct CDN URLs)
+ *   v4: offline-folders (user-created folders for organising downloaded songs)
  */
 
 const DB_NAME = "yt-music-offline";
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -57,6 +55,13 @@ export function getOfflineDb(): Promise<IDBDatabase> {
         urlStore.createIndex("savedAt", "savedAt", { unique: false });
         urlStore.createIndex("expiresAt", "expiresAt", { unique: false });
         console.log("[offlineDb] Created saved-urls store");
+      }
+
+      // v4: offline-folders
+      if (!db.objectStoreNames.contains("offline-folders")) {
+        const folderStore = db.createObjectStore("offline-folders", { keyPath: "id" });
+        folderStore.createIndex("createdAt", "createdAt", { unique: false });
+        console.log("[offlineDb] Created offline-folders store");
       }
     };
   });
