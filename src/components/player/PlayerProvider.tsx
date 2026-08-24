@@ -178,7 +178,20 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       isSeeking = false; // Reset seeking flag
       if (state.status === "loading") {
         // Auto-play when ready if we initiated a play
-        audio.play().catch(() => {});
+        audio.play().catch((err) => {
+          // On iOS in background, play() will be blocked with NotAllowedError.
+          // When this happens we MUST flip to "paused" so iOS shows the Play
+          // button in the notification center — otherwise the user sees the
+          // next track's title but hears nothing and has no way to resume
+          // without opening the app.
+          console.log("[PlayerProvider] canplay play() blocked:", err?.name);
+          if (err?.name === "NotAllowedError" || err?.name === "NotSupportedError") {
+            usePlayerStore.getState().setStatus("paused");
+            if ("mediaSession" in navigator) {
+              navigator.mediaSession.playbackState = "paused";
+            }
+          }
+        });
       }
     };
 
@@ -305,7 +318,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     // Play/Pause handlers
     navigator.mediaSession.setActionHandler("play", () => {
       console.log("[MediaSession] Play triggered");
-      audioRef.current?.play().catch(() => {});
+      const audio = audioRef.current;
+      if (!audio) return;
+      audio.play().then(() => {
+        usePlayerStore.getState().setStatus("playing");
+        navigator.mediaSession.playbackState = "playing";
+      }).catch(() => {});
     });
     navigator.mediaSession.setActionHandler("pause", () => {
       console.log("[MediaSession] Pause triggered");
@@ -539,10 +557,14 @@ export async function playTrack(track: Track, skipRadio = false) {
     audioElement.src = audioUrl;
     audioElement.load();
     
-    // Try to play immediately (works if user gesture initiated this)
+    // Try to play immediately (works if user gesture initiated this).
+    // On iOS in background this will throw NotAllowedError — that's expected.
+    // The canplay handler will retry; if that also fails it will flip to "paused"
+    // so the user sees a Play button in the notification center instead of
+    // a stuck "playing" state with no audio.
     audioElement.play().catch((e) => {
-      console.log("[playTrack] Initial play() rejected (may need user gesture):", e.name);
-      // Don't treat as error - canplay handler will retry
+      console.log("[playTrack] Initial play() rejected:", e?.name);
+      // Don't treat as error here — canplay handler manages the retry + fallback
     });
   }
 
