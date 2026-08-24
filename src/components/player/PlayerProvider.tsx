@@ -23,6 +23,10 @@ let isSeeking = false;
 // Track retry attempts for iOS
 let playRetryCount = 0;
 const MAX_PLAY_RETRIES = 3;
+// Flag: set to true when 'ended' fires so the subsequent 'pause' event
+// does NOT flip status to "paused" (which would tell iOS the session is dead
+// and cause the notification-center Next button to stop responding).
+let isAutoAdvancing = false;
 
 export function getAudioElement(): HTMLAudioElement | null {
   return audioElement;
@@ -85,7 +89,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     };
 
     const handlePause = () => {
-      // Only set paused if we didn't just end
+      // If we're auto-advancing to the next track (song ended naturally),
+      // skip setting "paused" — that would set playbackState="paused" on the
+      // MediaSession and iOS would ignore notification-center Next button taps
+      // during the entire async transition to the next song.
+      if (isAutoAdvancing) return;
+
       const state = usePlayerStore.getState();
       if (state.status !== "idle") {
         usePlayerStore.getState().setStatus("paused");
@@ -94,7 +103,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
     const handleEnded = () => {
       console.log("[PlayerProvider] Track ended, triggering next...");
-      // Use setTimeout to ensure this runs even in background
+      // Raise the flag BEFORE the browser fires its follow-up 'pause' event
+      // so handlePause knows to skip the "paused" status transition.
+      isAutoAdvancing = true;
+      // Keep MediaSession in "playing" state so iOS keeps the Next button live.
+      if ("mediaSession" in navigator) {
+        navigator.mediaSession.playbackState = "playing";
+      }
       setTimeout(() => {
         handleTrackEndRef.current();
       }, 0);
@@ -314,6 +329,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     });
     navigator.mediaSession.setActionHandler("nexttrack", () => {
       console.log("[MediaSession] Next track triggered");
+      // If we're already auto-advancing (song just ended and we're loading the
+      // next track), ignore the tap — handleTrackEnd already called next() and
+      // a second call would skip an extra song.
+      if (isAutoAdvancing) {
+        console.log("[MediaSession] Next ignored — auto-advance already in progress");
+        return;
+      }
       const n = useQueueStore.getState().next();
       if (n) {
         playTrack(n, true);
@@ -427,6 +449,18 @@ export async function playTrack(track: Track, skipRadio = false) {
     usePlayerStore.getState();
 
   console.log("[playTrack] Starting:", track.videoId, track.title);
+
+  // Clear the auto-advance flag now that we're actively loading the next track.
+  // Do this before any await so that if the user manually pauses during the
+  // async loading phase the pause event is handled normally again.
+  isAutoAdvancing = false;
+
+  // Immediately signal to iOS that the session is still active so the
+  // notification-center Next/Prev buttons remain responsive during the async
+  // loading phase (cache lookup, URL fetch, etc.).
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.playbackState = "playing";
+  }
 
   // Validate videoId
   if (!track.videoId || !/^[a-zA-Z0-9_-]{11}$/.test(track.videoId)) {
