@@ -110,9 +110,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       if ("mediaSession" in navigator) {
         navigator.mediaSession.playbackState = "playing";
       }
-      // Call synchronously — any delay (even setTimeout 0) burns iOS's
-      // auto-advance grace period before playTrack can call play().
-      handleTrackEndRef.current();
+      setTimeout(() => {
+        handleTrackEndRef.current();
+      }, 0);
     };
 
     const handleError = (e: Event) => {
@@ -256,15 +256,18 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     const nextTrack = next();
     if (nextTrack) {
       console.log("[PlayerProvider] Playing next track:", nextTrack.title);
-      // Call playTrack synchronously (no setTimeout) so the pre-src play()
-      // inside playTrack fires within iOS's auto-advance grace period.
-      playTrack(nextTrack, true);
+      // Small delay to ensure audio context is ready (helps with background playback)
+      setTimeout(() => {
+        playTrack(nextTrack, true);
+      }, 100);
     } else if (repeatMode === "all") {
       console.log("[PlayerProvider] Repeat all - restarting queue");
       const queue = useQueueStore.getState();
       if (queue.tracks.length > 0) {
         useQueueStore.getState().skipTo(0);
-        playTrack(queue.tracks[0], true);
+        setTimeout(() => {
+          playTrack(queue.tracks[0], true);
+        }, 100);
       }
     } else {
       console.log("[PlayerProvider] Queue ended");
@@ -465,12 +468,14 @@ export async function playTrack(track: Track, skipRadio = false) {
 
   console.log("[playTrack] Starting:", track.videoId, track.title);
 
-  // Clear the auto-advance flag. Do this synchronously before any await so
-  // manual pauses during the loading phase are handled normally.
+  // Clear the auto-advance flag now that we're actively loading the next track.
+  // Do this before any await so that if the user manually pauses during the
+  // async loading phase the pause event is handled normally again.
   isAutoAdvancing = false;
 
-  // Keep MediaSession active immediately — iOS needs this to stay "playing"
-  // so the notification center controls remain live.
+  // Immediately signal to iOS that the session is still active so the
+  // notification-center Next/Prev buttons remain responsive during the async
+  // loading phase (cache lookup, URL fetch, etc.).
   if ("mediaSession" in navigator) {
     navigator.mediaSession.playbackState = "playing";
   }
@@ -505,34 +510,7 @@ export async function playTrack(track: Track, skipRadio = false) {
   setStatus("loading");
   setDuration(track.duration || 0);
 
-  // --- iOS Background Audio: Register play intent BEFORE async work ---
-  //
-  // iOS grants a very short "auto-advance grace period" right after 'ended'.
-  // Any await (IndexedDB, Cache API) burns through that window. By the time
-  // the URL is resolved and we call play(), iOS accepts the call without
-  // throwing NotAllowedError — but the AVAudioSession was never re-activated,
-  // so the audio pipeline is silently suspended: the UI shows "playing",
-  // the MediaSession shows the new track, but no sound comes out.
-  //
-  // The fix: call play() on a blank src immediately (within the same
-  // synchronous call stack as 'ended'), then swap the src in after. iOS
-  // keeps the AVAudioSession alive for the element that already has an
-  // active play() promise, and resumes output when the src is loaded.
-  let playPromise: Promise<void> | null = null;
-  if (audioElement) {
-    // Calling play() on an element with no src returns a pending promise on
-    // iOS — it does NOT throw. We catch the AbortError that fires when we
-    // later assign src + load(), which is expected and harmless.
-    playPromise = audioElement.play().catch((e) => {
-      // AbortError is expected here: play() was interrupted by the src change.
-      // Any other error is worth logging.
-      if (e?.name !== "AbortError") {
-        console.log("[playTrack] Pre-src play() rejected:", e?.name);
-      }
-    });
-  }
-
-  // --- Resolve audio URL (async work happens here) ---
+  // Check cache first, then fall back to network
   let audioUrl: string;
   let isFromCache = false;
 
@@ -565,6 +543,7 @@ export async function playTrack(track: Track, skipRadio = false) {
   if (isOffline && !isFromCache) {
     console.warn("[playTrack] Offline and not cached, cannot play:", track.videoId);
     setStatus("error");
+    // Try next track
     const nextTrack = useQueueStore.getState().next();
     if (nextTrack) {
       setTimeout(() => playTrack(nextTrack, true), 500);
@@ -572,29 +551,20 @@ export async function playTrack(track: Track, skipRadio = false) {
     return;
   }
 
-  // --- Assign src and start real playback ---
+  // Set audio source
   if (audioElement) {
     console.log("[playTrack] Setting src:", audioUrl.substring(0, 50) + "...");
-
-    // Wait for the pre-src play() promise to settle before we interrupt it,
-    // otherwise iOS can get into a bad state with two overlapping play cycles.
-    if (playPromise) await playPromise;
-
     audioElement.src = audioUrl;
     audioElement.load();
-
-    // Now call play() for real. By this point iOS has kept the AVAudioSession
-    // alive (the earlier play() held it), so this should activate audio output.
+    
+    // Try to play immediately (works if user gesture initiated this).
+    // On iOS in background this will throw NotAllowedError — that's expected.
+    // The canplay handler will retry; if that also fails it will flip to "paused"
+    // so the user sees a Play button in the notification center instead of
+    // a stuck "playing" state with no audio.
     audioElement.play().catch((e) => {
-      console.log("[playTrack] play() after src set rejected:", e?.name);
-      if (e?.name === "NotAllowedError") {
-        // Truly blocked — surface as paused so user can tap Play
-        usePlayerStore.getState().setStatus("paused");
-        if ("mediaSession" in navigator) {
-          navigator.mediaSession.playbackState = "paused";
-        }
-      }
-      // AbortError from a fast subsequent track change is harmless
+      console.log("[playTrack] Initial play() rejected:", e?.name);
+      // Don't treat as error here — canplay handler manages the retry + fallback
     });
   }
 
