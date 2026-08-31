@@ -20,13 +20,26 @@ let currentBlobUrl: string | null = null;
 let audioElement: HTMLAudioElement | null = null;
 // Track if we're seeking (to prevent loading state during seeks)
 let isSeeking = false;
+// Monotonically identifies source changes so stale async lookups/play promises
+// cannot take control after the user (or the queue) has selected another track.
+let trackRequestId = 0;
 // Track retry attempts for iOS
 let playRetryCount = 0;
 const MAX_PLAY_RETRIES = 3;
-// Flag: set to true when 'ended' fires so the subsequent 'pause' event
-// does NOT flip status to "paused" (which would tell iOS the session is dead
-// and cause the notification-center Next button to stop responding).
+// Tracks the interval between an automatic source handoff and confirmed audio
+// output. Natural completion itself is identified with audio.ended because the
+// HTML media algorithm dispatches `pause` before `ended`.
 let isAutoAdvancing = false;
+
+interface ResolvedAudioSource {
+  url: string;
+  isFromCache: boolean;
+}
+
+// iOS can suspend the PWA as soon as the current media activity ends. Cached
+// sources therefore have to be resolved while the current song is still
+// playing; doing an IndexedDB/Cache API lookup from `ended` is already too late.
+let preparedNextSource: (ResolvedAudioSource & { videoId: string }) | null = null;
 
 export function getAudioElement(): HTMLAudioElement | null {
   return audioElement;
@@ -39,8 +52,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     status,
     volume,
     isMuted,
+    repeatMode,
   } = usePlayerStore();
-  const { next } = useQueueStore();
+  const { next, tracks: queueTracks, currentIndex: queueIndex } = useQueueStore();
+  const isOffline = useOfflineStore((state) => state.isOffline);
 
   // Store handleTrackEnd in a ref so callbacks always use latest version
   const handleTrackEndRef = useRef(() => {});
@@ -84,16 +99,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       }
     };
 
-    const handlePlay = () => {
-      usePlayerStore.getState().setStatus("playing");
-    };
-
     const handlePause = () => {
-      // If we're auto-advancing to the next track (song ended naturally),
-      // skip setting "paused" — that would set playbackState="paused" on the
-      // MediaSession and iOS would ignore notification-center Next button taps
-      // during the entire async transition to the next song.
-      if (isAutoAdvancing) return;
+      // The HTML media algorithm fires `pause` before `ended` on natural
+      // completion. `isAutoAdvancing` is therefore not set yet; audio.ended is
+      // the authoritative way to distinguish that pause from a user pause.
+      if (isAutoAdvancing || audio.ended) return;
 
       const state = usePlayerStore.getState();
       if (state.status !== "idle") {
@@ -103,16 +113,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
     const handleEnded = () => {
       console.log("[PlayerProvider] Track ended, triggering next...");
-      // Raise the flag BEFORE the browser fires its follow-up 'pause' event
-      // so handlePause knows to skip the "paused" status transition.
+      // Keep user/media-control pauses distinct while the new source starts.
       isAutoAdvancing = true;
-      // Keep MediaSession in "playing" state so iOS keeps the Next button live.
-      if ("mediaSession" in navigator) {
-        navigator.mediaSession.playbackState = "playing";
-      }
-      setTimeout(() => {
-        handleTrackEndRef.current();
-      }, 0);
+      // This must stay synchronous. On iOS a background PWA may be suspended
+      // as soon as this media-event task returns, so timers or source lookups
+      // here strand the next track in a visual-only "playing" state.
+      handleTrackEndRef.current();
     };
 
     const handleError = (e: Event) => {
@@ -174,29 +180,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     };
 
     const handleCanPlay = () => {
-      const state = usePlayerStore.getState();
       isSeeking = false; // Reset seeking flag
-      if (state.status === "loading") {
-        // Auto-play when ready if we initiated a play
-        audio.play().catch((err) => {
-          // On iOS in background, play() will be blocked with NotAllowedError.
-          // When this happens we MUST flip to "paused" so iOS shows the Play
-          // button in the notification center — otherwise the user sees the
-          // next track's title but hears nothing and has no way to resume
-          // without opening the app.
-          console.log("[PlayerProvider] canplay play() blocked:", err?.name);
-          if (err?.name === "NotAllowedError" || err?.name === "NotSupportedError") {
-            usePlayerStore.getState().setStatus("paused");
-            if ("mediaSession" in navigator) {
-              navigator.mediaSession.playbackState = "paused";
-            }
-          }
-        });
-      }
     };
 
     // Fires when playback actually starts (after buffering)
     const handlePlaying = () => {
+      isAutoAdvancing = false;
       usePlayerStore.getState().setStatus("playing");
     };
 
@@ -215,7 +204,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
     audio.addEventListener("timeupdate", handleTimeUpdate);
     audio.addEventListener("durationchange", handleDurationChange);
-    audio.addEventListener("play", handlePlay);
     audio.addEventListener("playing", handlePlaying);
     audio.addEventListener("pause", handlePause);
     audio.addEventListener("ended", handleEnded);
@@ -228,7 +216,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     return () => {
       audio.removeEventListener("timeupdate", handleTimeUpdate);
       audio.removeEventListener("durationchange", handleDurationChange);
-      audio.removeEventListener("play", handlePlay);
       audio.removeEventListener("playing", handlePlaying);
       audio.removeEventListener("pause", handlePause);
       audio.removeEventListener("ended", handleEnded);
@@ -249,28 +236,28 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     if (repeatMode === "one" && audio) {
       console.log("[PlayerProvider] Repeat one - restarting track");
       audio.currentTime = 0;
-      audio.play().catch((e) => console.error("[PlayerProvider] Repeat play failed:", e));
+      audio.play().catch((e) => {
+        isAutoAdvancing = false;
+        usePlayerStore.getState().setStatus("paused");
+        console.error("[PlayerProvider] Repeat play failed:", e);
+      });
       return;
     }
 
     const nextTrack = next();
     if (nextTrack) {
       console.log("[PlayerProvider] Playing next track:", nextTrack.title);
-      // Small delay to ensure audio context is ready (helps with background playback)
-      setTimeout(() => {
-        playTrack(nextTrack, true);
-      }, 100);
+      playTrackAfterEnded(nextTrack);
     } else if (repeatMode === "all") {
       console.log("[PlayerProvider] Repeat all - restarting queue");
       const queue = useQueueStore.getState();
       if (queue.tracks.length > 0) {
         useQueueStore.getState().skipTo(0);
-        setTimeout(() => {
-          playTrack(queue.tracks[0], true);
-        }, 100);
+        playTrackAfterEnded(queue.tracks[0]);
       }
     } else {
       console.log("[PlayerProvider] Queue ended");
+      isAutoAdvancing = false;
       usePlayerStore.getState().setStatus("idle");
     }
   }, [next]);
@@ -278,6 +265,40 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     handleTrackEndRef.current = handleTrackEnd;
   }, [handleTrackEnd]);
+
+  // Online auto-advance can synchronously use /api/audio/:videoId. Offline
+  // playback needs a blob URL, so resolve exactly the next cached song before
+  // the current one reaches `ended` and keep it ready for the native handoff.
+  useEffect(() => {
+    if (!isOffline) {
+      releasePreparedNextSource();
+      return;
+    }
+
+    const nextTrack = queueTracks[queueIndex + 1]
+      ?? (repeatMode === "all" ? queueTracks[0] : undefined);
+    if (!nextTrack) {
+      releasePreparedNextSource();
+      return;
+    }
+    if (preparedNextSource?.videoId === nextTrack.videoId) return;
+
+    let cancelled = false;
+    void resolveAudioSource(nextTrack).then((source) => {
+      if (cancelled) {
+        if (source.isFromCache) offlinePlaybackService.revokeBlobUrl(source.url);
+        return;
+      }
+      releasePreparedNextSource();
+      if (source.isFromCache) {
+        preparedNextSource = { ...source, videoId: nextTrack.videoId };
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOffline, queueIndex, queueTracks, repeatMode]);
 
   // Volume sync
   useEffect(() => {
@@ -327,6 +348,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     });
     navigator.mediaSession.setActionHandler("pause", () => {
       console.log("[MediaSession] Pause triggered");
+      isAutoAdvancing = false;
       audioRef.current?.pause();
     });
     
@@ -421,9 +443,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       navigator.mediaSession.playbackState = "playing";
     } else if (status === "paused") {
       navigator.mediaSession.playbackState = "paused";
-    } else {
+    } else if (status === "idle" || status === "error") {
       navigator.mediaSession.playbackState = "none";
     }
+    // Preserve the previous state while loading. Setting it to "none" during
+    // an ended-event handoff tells iOS that the media session has terminated.
   }, [status]);
 
   return <>{children}</>;
@@ -462,115 +486,91 @@ async function initializeOfflinePlayback() {
   }
 }
 
-export async function playTrack(track: Track, skipRadio = false) {
-  const { setCurrentTrack, setStatus, setDuration, currentTrack } =
-    usePlayerStore.getState();
+function isValidTrack(track: Track): boolean {
+  return Boolean(track.videoId && /^[a-zA-Z0-9_-]{11}$/.test(track.videoId));
+}
 
-  console.log("[playTrack] Starting:", track.videoId, track.title);
+function releasePreparedNextSource() {
+  if (
+    preparedNextSource?.isFromCache
+    && preparedNextSource.url !== currentBlobUrl
+  ) {
+    offlinePlaybackService.revokeBlobUrl(preparedNextSource.url);
+  }
+  preparedNextSource = null;
+}
 
-  // Clear the auto-advance flag now that we're actively loading the next track.
-  // Do this before any await so that if the user manually pauses during the
-  // async loading phase the pause event is handled normally again.
-  isAutoAdvancing = false;
+async function resolveAudioSource(track: Track): Promise<ResolvedAudioSource> {
+  try {
+    const source = await offlinePlaybackService.getAudioUrl(track.videoId);
+    if (source.isFromCache) {
+      console.log("[playTrack] Resolved cached source:", track.videoId);
+      return source;
+    }
 
-  // Immediately signal to iOS that the session is still active so the
-  // notification-center Next/Prev buttons remain responsive during the async
-  // loading phase (cache lookup, URL fetch, etc.).
-  if ("mediaSession" in navigator) {
-    navigator.mediaSession.playbackState = "playing";
+    const savedUrl = await savedUrlStore.getValidUrl(track.videoId);
+    if (savedUrl) {
+      console.log("[playTrack] Resolved saved direct URL:", track.videoId);
+      return { url: savedUrl, isFromCache: false };
+    }
+  } catch {
+    console.log("[playTrack] Source lookup failed, using network proxy:", track.videoId);
   }
 
-  // Validate videoId
-  if (!track.videoId || !/^[a-zA-Z0-9_-]{11}$/.test(track.videoId)) {
-    console.warn("[playTrack] Invalid videoId, skipping:", track.videoId);
-    const nextTrack = useQueueStore.getState().next();
-    if (nextTrack) playTrack(nextTrack, true);
+  return {
+    url: `${AUDIO_BACKEND_URL}/audio/${track.videoId}`,
+    isFromCache: false,
+  };
+}
+
+/**
+ * Assign and start a source without yielding the JavaScript task.
+ *
+ * This is the critical iOS invariant: when called from `ended`, src + load() +
+ * play() all happen on the already-authorized audio element before WebKit gets
+ * an opportunity to suspend the background PWA.
+ */
+function startTrackPlayback(
+  track: Track,
+  source: ResolvedAudioSource,
+  skipRadio: boolean,
+  requestId: number,
+) {
+  if (!audioElement || requestId !== trackRequestId) {
+    if (source.isFromCache) offlinePlaybackService.revokeBlobUrl(source.url);
     return;
   }
 
-  // If same track and audio is just paused, resume
-  if (currentTrack?.videoId === track.videoId && audioElement) {
-    if (audioElement.paused && audioElement.src) {
-      console.log("[playTrack] Resuming paused track");
-      audioElement.play().catch((e) => console.error("[playTrack] Resume failed:", e));
-      return;
-    }
-  }
-
-  // Reset retry count for new track
-  playRetryCount = 0;
-
-  // Revoke previous blob URL if exists
-  if (currentBlobUrl) {
+  if (currentBlobUrl && currentBlobUrl !== source.url) {
     offlinePlaybackService.revokeBlobUrl(currentBlobUrl);
-    currentBlobUrl = null;
   }
+  currentBlobUrl = source.isFromCache ? source.url : null;
 
+  const { setCurrentTrack, setStatus, setDuration, setStreamInfo } =
+    usePlayerStore.getState();
   setCurrentTrack(track);
   setStatus("loading");
   setDuration(track.duration || 0);
 
-  // Check cache first, then fall back to network
-  let audioUrl: string;
-  let isFromCache = false;
+  const audio = audioElement;
+  console.log("[playTrack] Setting src:", source.url.substring(0, 50) + "...");
+  audio.src = source.url;
+  audio.load();
 
-  try {
-    const audioSource = await offlinePlaybackService.getAudioUrl(track.videoId);
-    audioUrl = audioSource.url;
-    isFromCache = audioSource.isFromCache;
-    
-    if (isFromCache) {
-      currentBlobUrl = audioUrl; // Track for cleanup
-      console.log("[playTrack] Playing from cache:", track.videoId);
-    } else {
-      // Check for a saved direct URL before falling back to the backend proxy
-      const savedUrl = await savedUrlStore.getValidUrl(track.videoId);
-      if (savedUrl) {
-        audioUrl = savedUrl;
-        console.log("[playTrack] Playing from saved URL (direct CDN):", track.videoId);
-      } else {
-        console.log("[playTrack] Playing from network proxy:", track.videoId);
-      }
+  // A single play request owns this source. `canplay` only reports readiness;
+  // it must not issue a second request after the ended-event task has returned.
+  audio.play().catch((error) => {
+    if (requestId !== trackRequestId) return;
+    isAutoAdvancing = false;
+    setStatus("paused");
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.playbackState = "paused";
     }
-  } catch (e) {
-    // Fallback to network URL
-    audioUrl = `${AUDIO_BACKEND_URL}/audio/${track.videoId}`;
-    console.log("[playTrack] Cache check failed, using network:", track.videoId);
-  }
+    console.error("[playTrack] Playback request rejected:", error?.name, error);
+  });
 
-  // Check if offline and not cached
-  const isOffline = !navigator.onLine;
-  if (isOffline && !isFromCache) {
-    console.warn("[playTrack] Offline and not cached, cannot play:", track.videoId);
-    setStatus("error");
-    // Try next track
-    const nextTrack = useQueueStore.getState().next();
-    if (nextTrack) {
-      setTimeout(() => playTrack(nextTrack, true), 500);
-    }
-    return;
-  }
-
-  // Set audio source
-  if (audioElement) {
-    console.log("[playTrack] Setting src:", audioUrl.substring(0, 50) + "...");
-    audioElement.src = audioUrl;
-    audioElement.load();
-    
-    // Try to play immediately (works if user gesture initiated this).
-    // On iOS in background this will throw NotAllowedError — that's expected.
-    // The canplay handler will retry; if that also fails it will flip to "paused"
-    // so the user sees a Play button in the notification center instead of
-    // a stuck "playing" state with no audio.
-    audioElement.play().catch((e) => {
-      console.log("[playTrack] Initial play() rejected:", e?.name);
-      // Don't treat as error here — canplay handler manages the retry + fallback
-    });
-  }
-
-  // Set streamInfo for UI compatibility
-  usePlayerStore.getState().setStreamInfo({
-    url: audioUrl,
+  setStreamInfo({
+    url: source.url,
     mimeType: "audio/mp4",
     bitrate: 128000,
     duration: track.duration || 0,
@@ -578,19 +578,94 @@ export async function playTrack(track: Track, skipRadio = false) {
     videoId: track.videoId,
   });
 
-  // If played from network, cache in background after a delay
-  if (!isFromCache && !isOffline) {
-    cacheAudioInBackground(track);
+  const isOffline = !navigator.onLine;
+  if (!source.isFromCache && !isOffline) {
+    void cacheAudioInBackground(track);
   }
 
-  // Fetch radio queue in background
   if (!skipRadio && !isOffline) {
     const queue = useQueueStore.getState();
     const upcomingCount = queue.tracks.length - queue.currentIndex - 1;
-    if (upcomingCount <= 2) {
-      fetchRadioQueue(track.videoId);
-    }
+    if (upcomingCount <= 2) void fetchRadioQueue(track.videoId);
   }
+}
+
+function playTrackAfterEnded(track: Track) {
+  if (!isValidTrack(track)) {
+    console.warn("[playTrack] Invalid auto-advance track:", track.videoId);
+    isAutoAdvancing = false;
+    usePlayerStore.getState().setStatus("error");
+    return;
+  }
+
+  let source: ResolvedAudioSource | null = null;
+  if (preparedNextSource?.videoId === track.videoId) {
+    source = preparedNextSource;
+    preparedNextSource = null;
+  } else if (navigator.onLine) {
+    // This URL is deterministic; redirects and stream resolution happen in the
+    // media loader, without yielding the ended-event JavaScript task.
+    source = {
+      url: `${AUDIO_BACKEND_URL}/audio/${track.videoId}`,
+      isFromCache: false,
+    };
+  }
+
+  if (!source) {
+    console.error("[playTrack] Next offline source was not prepared:", track.videoId);
+    isAutoAdvancing = false;
+    usePlayerStore.getState().setStatus("error");
+    return;
+  }
+
+  const requestId = ++trackRequestId;
+  playRetryCount = 0;
+  startTrackPlayback(track, source, true, requestId);
+}
+
+export async function playTrack(track: Track, skipRadio = false) {
+  const requestId = ++trackRequestId;
+  const { currentTrack, setStatus } = usePlayerStore.getState();
+
+  console.log("[playTrack] Starting:", track.videoId, track.title);
+  isAutoAdvancing = false;
+
+  if (!isValidTrack(track)) {
+    console.warn("[playTrack] Invalid videoId, skipping:", track.videoId);
+    const nextTrack = useQueueStore.getState().next();
+    if (nextTrack) void playTrack(nextTrack, true);
+    return;
+  }
+
+  if (currentTrack?.videoId === track.videoId && audioElement?.src) {
+    if (audioElement.paused) {
+      console.log("[playTrack] Resuming paused track");
+      audioElement.play().catch((error) => {
+        if (requestId !== trackRequestId) return;
+        setStatus("paused");
+        console.error("[playTrack] Resume failed:", error);
+      });
+    }
+    return;
+  }
+
+  playRetryCount = 0;
+  const source = await resolveAudioSource(track);
+
+  if (requestId !== trackRequestId) {
+    if (source.isFromCache) offlinePlaybackService.revokeBlobUrl(source.url);
+    return;
+  }
+
+  if (!navigator.onLine && !source.isFromCache) {
+    console.warn("[playTrack] Offline and not cached, cannot play:", track.videoId);
+    setStatus("error");
+    const nextTrack = useQueueStore.getState().next();
+    if (nextTrack) void playTrack(nextTrack, true);
+    return;
+  }
+
+  startTrackPlayback(track, source, skipRadio, requestId);
 }
 
 /**
