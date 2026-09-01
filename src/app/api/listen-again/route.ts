@@ -1,16 +1,12 @@
-import { NextRequest, NextResponse } from "next/server";
-
-const AUDIO_BACKEND_URL =
-  process.env.AUDIO_BACKEND_URL ||
-  process.env.NEXT_PUBLIC_AUDIO_BACKEND_URL ||
-  "http://localhost:8000";
+import { NextResponse } from "next/server";
+import { AUDIO_BACKEND_URL } from "@/lib/audioBackend";
 
 /**
  * Proxy to the Python backend's /listen-again endpoint.
  * The Python backend uses ytmusicapi with cookie auth to call
  * FEmusic_listen_again and returns the real personalised track list.
  */
-export async function GET(_request: NextRequest) {
+export async function GET() {
   try {
     const res = await fetch(`${AUDIO_BACKEND_URL}/listen-again`, {
       headers: { "ngrok-skip-browser-warning": "true" },

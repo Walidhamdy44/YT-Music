@@ -1,9 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const AUDIO_BACKEND_URL =
-  process.env.AUDIO_BACKEND_URL ||
-  process.env.NEXT_PUBLIC_AUDIO_BACKEND_URL ||
-  "http://localhost:8000";
+import { AUDIO_BACKEND_URL } from "@/lib/audioBackend";
 
 /**
  * Resolve the direct YouTube CDN URL for a video without streaming any audio.
