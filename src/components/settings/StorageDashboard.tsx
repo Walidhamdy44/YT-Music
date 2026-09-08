@@ -149,7 +149,8 @@ export function StorageDashboard() {
   // ── selection ────────────────────────────────────────────────────────────
   const toggleSelect = (videoId: string) => {
     const s = new Set(selectedTracks);
-    s.has(videoId) ? s.delete(videoId) : s.add(videoId);
+    if (s.has(videoId)) s.delete(videoId);
+    else s.add(videoId);
     setSelectedTracks(s);
   };
 
@@ -164,11 +165,7 @@ export function StorageDashboard() {
   const shufflePlayAll = () => {
     if (!sortedTracks.length) return;
     const tracks: Track[] = sortedTracks.map((m) => ({ id: m.videoId, videoId: m.videoId, title: m.title, artist: m.artist, thumbnail: m.thumbnail, duration: m.duration }));
-    const shuffled = [...tracks];
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
+    const shuffled = shuffleTracks(tracks);
     useQueueStore.getState().setQueue(shuffled, 0);
     usePlayerStore.getState().toggleShuffle();
     if (!usePlayerStore.getState().isShuffled) usePlayerStore.getState().toggleShuffle();
@@ -183,6 +180,17 @@ export function StorageDashboard() {
     if (!tracks.length) return;
     useQueueStore.getState().setQueue(tracks, 0);
     playTrack(tracks[0], true);
+  };
+
+  const playDownloadedTrack = (selectedTrack: CachedTrackMetadata) => {
+    const tracks = displayTracks.map(cachedMetadataToTrack);
+    const selectedIndex = tracks.findIndex(
+      (track) => track.videoId === selectedTrack.videoId,
+    );
+    if (selectedIndex < 0) return;
+
+    useQueueStore.getState().setQueue(tracks, selectedIndex);
+    void playTrack(tracks[selectedIndex], true);
   };
 
   return (
@@ -340,9 +348,10 @@ export function StorageDashboard() {
             {displayTracks.map((track) => (
               <CachedTrackItem
                 key={track.videoId}
-                track={track}
-                isSelected={selectedTracks.has(track.videoId)}
-                onSelect={() => toggleSelect(track.videoId)}
+                 track={track}
+                 isSelected={selectedTracks.has(track.videoId)}
+                 onPlay={() => playDownloadedTrack(track)}
+                 onSelect={() => toggleSelect(track.videoId)}
                 onDelete={() => deleteTrack(track.videoId)}
                 onAddToFolder={() => openMoveSheet(track)}
                 showCheckbox={!openFolder}
@@ -432,13 +441,44 @@ function FolderCard({ folder, coverTracks, onClick, onEdit, onDelete, onPlay }: 
 }
 
 // ── Track item ────────────────────────────────────────────────────────────────
-function CachedTrackItem({ track, isSelected, onSelect, onDelete, onAddToFolder, showCheckbox = true, onRemoveFromFolder }: {
+function cachedMetadataToTrack(metadata: CachedTrackMetadata): Track {
+  return {
+    id: metadata.videoId,
+    videoId: metadata.videoId,
+    title: metadata.title,
+    artist: metadata.artist,
+    artistId: metadata.artistId,
+    album: metadata.album,
+    albumId: metadata.albumId,
+    thumbnail: metadata.thumbnail,
+    thumbnailLarge: metadata.thumbnailLarge,
+    duration: metadata.duration,
+  };
+}
+
+function shuffleTracks(tracks: Track[]): Track[] {
+  const shuffled = [...tracks];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
+function CachedTrackItem({ track, isSelected, onPlay, onSelect, onDelete, onAddToFolder, showCheckbox = true, onRemoveFromFolder }: {
   track: CachedTrackMetadata; isSelected: boolean;
-  onSelect: () => void; onDelete: () => void; onAddToFolder: () => void;
+  onPlay: () => void; onSelect: () => void; onDelete: () => void; onAddToFolder: () => void;
   showCheckbox?: boolean; onRemoveFromFolder?: () => void;
 }) {
+  const [renderedAt] = useState(() => Date.now());
+  const currentTrack = usePlayerStore((state) => state.currentTrack);
+  const playerStatus = usePlayerStore((state) => state.status);
+  const isCurrentTrack = currentTrack?.videoId === track.videoId;
+  const isPlaying = isCurrentTrack && playerStatus === "playing";
+  const isLoading = isCurrentTrack && playerStatus === "loading";
+
   const formatDate = (ts: number) => {
-    const d = Math.floor((Date.now() - ts) / 86400000);
+    const d = Math.floor((renderedAt - ts) / 86400000);
     if (d === 0) return "Today";
     if (d === 1) return "Yesterday";
     if (d < 7) return `${d} days ago`;
@@ -446,42 +486,94 @@ function CachedTrackItem({ track, isSelected, onSelect, onDelete, onAddToFolder,
   };
 
   return (
-    <div className={`flex items-center gap-3 p-2 rounded-lg transition-colors ${isSelected ? "bg-primary/10" : "hover:bg-surface-container"}`}>
+    <div className={`group flex items-center gap-2 p-2 rounded-lg transition-colors ${
+      isSelected
+        ? "bg-primary/10"
+        : isCurrentTrack
+          ? "bg-surface-container"
+          : "hover:bg-surface-container"
+    }`}>
       {showCheckbox && (
-        <button onClick={onSelect} className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors flex-shrink-0 ${isSelected ? "bg-primary border-primary" : "border-on-surface-variant hover:border-primary"}`}>
+        <button
+          type="button"
+          onClick={onSelect}
+          aria-label={`${isSelected ? "Deselect" : "Select"} ${track.title}`}
+          aria-pressed={isSelected}
+          className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors flex-shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background ${isSelected ? "bg-primary border-primary" : "border-on-surface-variant hover:border-primary"}`}
+        >
           {isSelected && <CheckCircle2 size={14} className="text-on-primary" />}
         </button>
       )}
-      <div className="w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-surface-container-high">
-        {track.thumbnail ? (
-          <img src={track.thumbnail} alt={track.title} className="w-full h-full object-cover" />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center">
-            <span className="material-symbols-outlined text-on-surface-variant text-[16px]">music_note</span>
-          </div>
-        )}
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium truncate">{track.title}</p>
-        <p className="text-xs text-on-surface-variant truncate">{track.artist}</p>
-      </div>
-      <div className="text-right text-xs text-on-surface-variant hidden sm:block">
-        <p>{StorageManager.formatBytes(track.fileSize)}</p>
-        <p>{formatDate(track.cachedAt)}</p>
-      </div>
-      {track.isManualDownload && <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary">Downloaded</span>}
+
+      <button
+        type="button"
+        onClick={onPlay}
+        aria-label={isPlaying ? `${track.title} is playing` : `Play ${track.title} by ${track.artist}`}
+        className="group/track flex min-w-0 flex-1 items-center gap-3 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+      >
+        <div className="relative w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-surface-container-high">
+          {track.thumbnail ? (
+            <img src={track.thumbnail} alt="" className="w-full h-full object-cover" />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center">
+              <span className="material-symbols-outlined text-on-surface-variant text-[16px]">music_note</span>
+            </div>
+          )}
+          <span className={`absolute inset-0 flex items-center justify-center bg-black/45 transition-opacity ${
+            isCurrentTrack ? "opacity-100" : "opacity-0 group-hover/track:opacity-100 group-focus-visible/track:opacity-100"
+          }`} aria-hidden="true">
+            {isLoading ? (
+              <span className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
+            ) : (
+              <span className="material-symbols-outlined text-white text-[19px]">
+                {isPlaying ? "equalizer" : "play_arrow"}
+              </span>
+            )}
+          </span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className={`text-sm font-medium truncate transition-colors ${isCurrentTrack ? "text-primary" : "group-hover/track:text-primary"}`}>
+            {track.title}
+          </p>
+          <p className="text-xs text-on-surface-variant truncate">{track.artist}</p>
+        </div>
+        <div className="text-right text-xs text-on-surface-variant hidden sm:block tabular-nums">
+          <p>{StorageManager.formatBytes(track.fileSize)}</p>
+          <p>{formatDate(track.cachedAt)}</p>
+        </div>
+        {track.isManualDownload && <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary">Downloaded</span>}
+      </button>
+
       {/* Add to folder — always visible (no hover-only on mobile) */}
-      <button onClick={onAddToFolder} className="p-1.5 rounded-full bg-surface-container hover:bg-surface-container-high active:bg-surface-container-high text-on-surface-variant hover:text-primary active:text-primary transition-colors" title="Add to folder">
+      <button
+        type="button"
+        onClick={onAddToFolder}
+        className="p-1.5 rounded-full bg-surface-container hover:bg-surface-container-high active:bg-surface-container-high text-on-surface-variant hover:text-primary active:text-primary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        title="Add to folder"
+        aria-label={`Add ${track.title} to a folder`}
+      >
         <FolderPlus size={15} />
       </button>
       {/* Remove from folder (inside folder view) */}
       {onRemoveFromFolder && (
-        <button onClick={onRemoveFromFolder} className="p-1.5 rounded-full hover:bg-surface-container-high text-on-surface-variant hover:text-amber-500 transition-colors" title="Remove from this folder">
+        <button
+          type="button"
+          onClick={onRemoveFromFolder}
+          className="p-1.5 rounded-full hover:bg-surface-container-high text-on-surface-variant hover:text-amber-500 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          title="Remove from this folder"
+          aria-label={`Remove ${track.title} from this folder`}
+        >
           <FolderX size={15} />
         </button>
       )}
       {/* Delete */}
-      <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="p-1.5 rounded-full hover:bg-destructive/10 text-on-surface-variant hover:text-destructive transition-colors" title="Remove from cache">
+      <button
+        type="button"
+        onClick={onDelete}
+        className="p-1.5 rounded-full hover:bg-destructive/10 text-on-surface-variant hover:text-destructive transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        title="Remove from cache"
+        aria-label={`Remove ${track.title} from downloaded songs`}
+      >
         <Trash2 size={16} />
       </button>
     </div>

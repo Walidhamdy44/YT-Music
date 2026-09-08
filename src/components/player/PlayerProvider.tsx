@@ -55,8 +55,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     repeatMode,
   } = usePlayerStore();
   const { next, tracks: queueTracks, currentIndex: queueIndex } = useQueueStore();
-  const isOffline = useOfflineStore((state) => state.isOffline);
-
   // Store handleTrackEnd in a ref so callbacks always use latest version
   const handleTrackEndRef = useRef(() => {});
 
@@ -266,15 +264,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     handleTrackEndRef.current = handleTrackEnd;
   }, [handleTrackEnd]);
 
-  // Online auto-advance can synchronously use /api/audio/:videoId. Offline
-  // playback needs a blob URL, so resolve exactly the next cached song before
-  // the current one reaches `ended` and keep it ready for the native handoff.
+  // Resolve the next cached song before the current one reaches `ended` and
+  // keep its blob URL ready for the native handoff. Do this while online too:
+  // using navigator.onLine to prefer /api/audio caused iOS to suspend the PWA
+  // while that network stream was starting, even when the song was downloaded.
   useEffect(() => {
-    if (!isOffline) {
-      releasePreparedNextSource();
-      return;
-    }
-
     const nextTrack = queueTracks[queueIndex + 1]
       ?? (repeatMode === "all" ? queueTracks[0] : undefined);
     if (!nextTrack) {
@@ -298,7 +292,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [isOffline, queueIndex, queueTracks, repeatMode]);
+  }, [queueIndex, queueTracks, repeatMode]);
 
   // Volume sync
   useEffect(() => {
