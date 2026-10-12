@@ -4,8 +4,8 @@ import type { Track } from "@/types";
 import { playTrack } from "@/components/player/PlayerProvider";
 import { useQueueStore } from "@/stores/queueStore";
 import { usePlayerStore } from "@/stores/playerStore";
+import { useUIStore } from "@/stores/uiStore";
 import { formatTime } from "@/lib/utils";
-import { CacheStatusIndicator } from "./CacheStatusIndicator";
 import { DownloadButton } from "./DownloadButton";
 
 interface TrackRowProps {
@@ -27,6 +27,10 @@ export function TrackRow({ track, tracks, index = 0, showDuration = true, showIn
   const isLoading = isCurrentTrack && status === "loading";
 
   const handlePlay = () => {
+    if (isCurrentTrack && status !== "idle" && status !== "error" && window.matchMedia("(max-width: 767px)").matches) {
+      useUIStore.getState().setFullscreenPlayer(true);
+      return;
+    }
     if (tracks) {
       setQueue(tracks, index);
     }

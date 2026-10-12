@@ -13,6 +13,7 @@ interface PlayerState {
   isShuffled: boolean;
   repeatMode: RepeatMode;
   streamInfo: StreamInfo | null;
+  sleepTimerEndsAt: number | null;
 
   // Actions
   setCurrentTrack: (track: Track | null) => void;
@@ -24,6 +25,7 @@ interface PlayerState {
   toggleShuffle: () => void;
   cycleRepeatMode: () => void;
   setStreamInfo: (info: StreamInfo | null) => void;
+  setSleepTimer: (minutes: number | null) => void;
   reset: () => void;
 }
 
@@ -39,6 +41,7 @@ export const usePlayerStore = create<PlayerState>()(
       isShuffled: false,
       repeatMode: "none",
       streamInfo: null,
+      sleepTimerEndsAt: null,
 
       setCurrentTrack: (track) => set({ currentTrack: track }),
       setStatus: (status) => set({ status }),
@@ -54,6 +57,7 @@ export const usePlayerStore = create<PlayerState>()(
           return { repeatMode: modes[(currentIndex + 1) % modes.length] };
         }),
       setStreamInfo: (info) => set({ streamInfo: info }),
+      setSleepTimer: (minutes) => set({ sleepTimerEndsAt: minutes !== null && Number.isFinite(minutes) && minutes > 0 ? Date.now() + minutes * 60_000 : null }),
       reset: () =>
         set({
           currentTrack: null,
@@ -61,6 +65,7 @@ export const usePlayerStore = create<PlayerState>()(
           currentTime: 0,
           duration: 0,
           streamInfo: null,
+          sleepTimerEndsAt: null,
         }),
     }),
     {
@@ -73,6 +78,7 @@ export const usePlayerStore = create<PlayerState>()(
         isShuffled: state.isShuffled,
         repeatMode: state.repeatMode,
         duration: state.duration,
+        sleepTimerEndsAt: state.sleepTimerEndsAt,
         // Don't persist: status, currentTime, streamInfo (these are session-only)
       }),
     }

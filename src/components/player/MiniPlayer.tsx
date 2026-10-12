@@ -2,7 +2,6 @@
 
 import { usePlayerStore } from "@/stores/playerStore";
 import { useQueueStore } from "@/stores/queueStore";
-import { useLibraryStore } from "@/stores/libraryStore";
 import { playTrack, togglePlayback, seekTo, handleShuffle } from "./PlayerProvider";
 import { useUIStore } from "@/stores/uiStore";
 import { formatTime } from "@/lib/utils";
@@ -13,29 +12,30 @@ export function MiniPlayer() {
     usePlayerStore();
   const { next, previous } = useQueueStore();
   const { setFullscreenPlayer } = useUIStore();
-  const { setVolume, toggleMute, toggleShuffle: _, cycleRepeatMode } = usePlayerStore();
-  const { toggleSaveTrack, isTrackSaved } = useLibraryStore();
-  const [rating, setRating] = useState<"like" | "dislike" | "none">("none");
+  const { setVolume, toggleMute, cycleRepeatMode } = usePlayerStore();
+  const [trackRating, setTrackRating] = useState<{ videoId: string; rating: "like" | "dislike" | "none" }>({ videoId: "", rating: "none" });
+  const rating = trackRating.videoId === currentTrack?.videoId ? trackRating.rating : "none";
 
   // Fetch rating when track changes
   useEffect(() => {
     if (!currentTrack?.videoId) return;
-    setRating("none");
-    fetch(`/api/rate?videoId=${currentTrack.videoId}`)
+    const videoId = currentTrack.videoId;
+    let cancelled = false;
+    fetch(`/api/rate?videoId=${videoId}`)
       .then(r => r.ok ? r.json() : { rating: "none" })
-      .then(d => setRating(d.rating || "none"))
+      .then(d => { if (!cancelled) setTrackRating({ videoId, rating: d.rating || "none" }); })
       .catch(() => {});
+    return () => { cancelled = true; };
   }, [currentTrack?.videoId]);
 
   if (!currentTrack) return null;
 
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
   const isLoading = status === "loading";
-  const saved = isTrackSaved(currentTrack.videoId);
 
   const handleRate = async (newRating: "like" | "dislike") => {
     const finalRating = rating === newRating ? "none" : newRating;
-    setRating(finalRating);
+    setTrackRating({ videoId: currentTrack.videoId, rating: finalRating });
     fetch("/api/rate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -57,7 +57,7 @@ export function MiniPlayer() {
     <div className="fixed bottom-16 md:bottom-0 left-0 w-full z-50 md:pl-[240px] bg-surface-container-high/90 backdrop-blur-xl border-t border-white/5 transition-all">
       {/* Progress bar */}
       <div
-        className="h-2 w-full bg-surface-container-highest cursor-pointer group progress-bar-container relative"
+        className="h-1 md:h-2 w-full bg-surface-container-highest cursor-pointer group progress-bar-container relative"
         onClick={(e) => {
           if (isLoading) return;
           const rect = e.currentTarget.getBoundingClientRect();
@@ -81,7 +81,25 @@ export function MiniPlayer() {
         )}
       </div>
 
-      <div className="flex items-center justify-between px-4 py-3 md:px-6 h-20">
+      <div className="flex h-[72px] items-center gap-1 px-3 md:hidden">
+        <button type="button" aria-label="Open now playing" aria-haspopup="dialog" onClick={() => setFullscreenPlayer(true)} className="flex min-w-0 flex-1 items-center gap-3 rounded-md text-left focus-visible:outline-2 focus-visible:outline-primary">
+          <span className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded bg-surface-container">
+            {currentTrack.thumbnail ? <img src={currentTrack.thumbnail} alt="" className="size-full object-cover" /> : <span className="material-symbols-outlined text-on-surface-variant" aria-hidden="true">music_note</span>}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span dir="auto" className="block truncate text-sm font-semibold text-on-surface">{currentTrack.title}</span>
+            <span dir="auto" className="mt-0.5 block truncate text-xs text-on-surface-variant">{currentTrack.artist}</span>
+          </span>
+        </button>
+        <button type="button" onClick={togglePlayback} disabled={isLoading} aria-label={isLoading ? "Loading song" : status === "playing" ? "Pause" : "Play"} className="flex size-11 shrink-0 items-center justify-center rounded-full text-on-surface active:bg-white/10 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-primary">
+          {isLoading ? <span className="size-5 animate-spin rounded-full border-2 border-on-surface border-t-transparent motion-reduce:animate-none" /> : <span className="material-symbols-outlined text-[28px]" aria-hidden="true" style={{ fontVariationSettings: "'FILL' 1" }}>{status === "playing" ? "pause" : "play_arrow"}</span>}
+        </button>
+        <button type="button" onClick={handleNext} aria-label="Next song" className="flex size-11 shrink-0 items-center justify-center rounded-full text-on-surface active:bg-white/10 focus-visible:outline-2 focus-visible:outline-primary">
+          <span className="material-symbols-outlined text-[28px]" aria-hidden="true" style={{ fontVariationSettings: "'FILL' 1" }}>skip_next</span>
+        </button>
+      </div>
+
+      <div className="hidden md:flex items-center justify-between px-4 py-3 md:px-6 h-20">
         {/* Now Playing Info */}
         <div className="flex items-center gap-4 w-1/3 min-w-0">
           <div

@@ -2,11 +2,13 @@
 
 import { useEffect, useRef, useCallback } from "react";
 import { usePlayerStore } from "@/stores/playerStore";
+import { useUIStore } from "@/stores/uiStore";
 import { useQueueStore } from "@/stores/queueStore";
 import { useOfflineStore } from "@/stores/offlineStore";
 import { offlinePlaybackService } from "@/lib/offlinePlaybackService";
 import { savedUrlStore } from "@/lib/savedUrlStore";
 import { CacheMetadataStore } from "@/lib/cacheMetadataStore";
+import { scheduleSleepTimer } from "@/lib/sleepTimer";
 import type { Track } from "@/types";
 
 // Audio backend URL — use local API proxy to bypass ngrok warning
@@ -45,6 +47,19 @@ export function getAudioElement(): HTMLAudioElement | null {
   return audioElement;
 }
 
+function expireSleepTimerIfNeeded(): boolean {
+  const player = usePlayerStore.getState();
+  if (player.sleepTimerEndsAt == null || Date.now() < player.sleepTimerEndsAt) return false;
+  // Invalidate pending source lookups and error retries as well as active audio.
+  trackRequestId++;
+  isAutoAdvancing = false;
+  audioElement?.pause();
+  player.setStatus(player.currentTrack ? "paused" : "idle");
+  player.setSleepTimer(null);
+  if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
+  return true;
+}
+
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const {
@@ -53,6 +68,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     volume,
     isMuted,
     repeatMode,
+    sleepTimerEndsAt,
   } = usePlayerStore();
   const { next, tracks: queueTracks, currentIndex: queueIndex } = useQueueStore();
   // Store handleTrackEnd in a ref so callbacks always use latest version
@@ -75,6 +91,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     const audio = audioRef.current;
 
     const handleTimeUpdate = () => {
+      if (expireSleepTimerIfNeeded()) return;
       const time = audio.currentTime;
       if (Number.isFinite(time)) {
         usePlayerStore.getState().setCurrentTime(time);
@@ -110,6 +127,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     };
 
     const handleEnded = () => {
+      if (expireSleepTimerIfNeeded()) return;
       console.log("[PlayerProvider] Track ended, triggering next...");
       // Keep user/media-control pauses distinct while the new source starts.
       isAutoAdvancing = true;
@@ -120,10 +138,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     };
 
     const handleError = (e: Event) => {
+      const audio = e.target as HTMLAudioElement;
+      if (expireSleepTimerIfNeeded()) return;
+      if (audio.paused && usePlayerStore.getState().status === "paused") return;
       const track = usePlayerStore.getState().currentTrack;
       if (!track) return;
 
-      const audio = e.target as HTMLAudioElement;
       const error = audio.error;
       
       // Detailed error logging for debugging
@@ -144,9 +164,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       
       // On iOS/mobile, retry a few times (could be ngrok interstitial or network issue)
       if (playRetryCount < MAX_PLAY_RETRIES) {
+        const requestId = trackRequestId;
         playRetryCount++;
         console.log(`[Audio] Retrying playback (attempt ${playRetryCount}/${MAX_PLAY_RETRIES})...`);
         setTimeout(() => {
+          if (requestId !== trackRequestId || expireSleepTimerIfNeeded()) return;
           if (audioElement && track.videoId) {
             audioElement.load();
             audioElement.play().catch((playError) => {
@@ -171,6 +193,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     };
 
     const handleWaiting = () => {
+      if (audio.paused && usePlayerStore.getState().status === "paused") return;
       // Only show loading if we're not seeking (seeking has its own UI state)
       if (!isSeeking) {
         usePlayerStore.getState().setStatus("loading");
@@ -183,6 +206,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
     // Fires when playback actually starts (after buffering)
     const handlePlaying = () => {
+      if (expireSleepTimerIfNeeded()) return;
       isAutoAdvancing = false;
       usePlayerStore.getState().setStatus("playing");
     };
@@ -225,8 +249,22 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  useEffect(() => {
+    if (sleepTimerEndsAt == null) return;
+    const cancel = scheduleSleepTimer(sleepTimerEndsAt, expireSleepTimerIfNeeded);
+    const check = () => { expireSleepTimerIfNeeded(); };
+    document.addEventListener("visibilitychange", check);
+    window.addEventListener("pageshow", check);
+    return () => {
+      cancel();
+      document.removeEventListener("visibilitychange", check);
+      window.removeEventListener("pageshow", check);
+    };
+  }, [sleepTimerEndsAt]);
+
   // Handle track end (next/repeat logic)
   const handleTrackEnd = useCallback(() => {
+    if (expireSleepTimerIfNeeded()) return;
     console.log("[PlayerProvider] handleTrackEnd called");
     const { repeatMode } = usePlayerStore.getState();
     const audio = audioRef.current;
@@ -530,7 +568,7 @@ function startTrackPlayback(
   skipRadio: boolean,
   requestId: number,
 ) {
-  if (!audioElement || requestId !== trackRequestId) {
+  if (expireSleepTimerIfNeeded() || !audioElement || requestId !== trackRequestId) {
     if (source.isFromCache) offlinePlaybackService.revokeBlobUrl(source.url);
     return;
   }
@@ -618,6 +656,12 @@ function playTrackAfterEnded(track: Track) {
 }
 
 export async function playTrack(track: Track, skipRadio = false) {
+  const player = usePlayerStore.getState();
+  if (!skipRadio && player.currentTrack?.videoId === track.videoId && player.status !== "idle" && player.status !== "error" && typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches) {
+    // Expanding the current song must not cancel an in-flight playback request.
+    useUIStore.getState().setFullscreenPlayer(true);
+    return;
+  }
   const requestId = ++trackRequestId;
   const { currentTrack, setStatus } = usePlayerStore.getState();
 

@@ -8,6 +8,8 @@ import { playTrack, togglePlayback, seekTo, handleShuffle } from "./PlayerProvid
 import { formatTime } from "@/lib/utils";
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { Track } from "@/types";
+import { MobileNowPlaying } from "./MobileNowPlaying";
+import { SleepTimerMenu } from "./SleepTimerMenu";
 
 const queueTabs = ["UP NEXT", "LYRICS", "RELATED"];
 
@@ -28,10 +30,48 @@ export function FullscreenPlayer() {
   } = usePlayerStore();
   const { tracks, currentIndex, next, previous, skipTo, removeFromQueue } = useQueueStore();
   const [activeTab, setActiveTab] = useState("UP NEXT");
-  const [relatedTracks, setRelatedTracks] = useState<Track[]>([]);
-  const [relatedLoading, setRelatedLoading] = useState(false);
-  const [rating, setRating] = useState<"like" | "dislike" | "none">("none");
+  const [related, setRelated] = useState<{ videoId: string; tracks: Track[] }>({ videoId: "", tracks: [] });
+  const [trackRating, setTrackRating] = useState<{ videoId: string; rating: "like" | "dislike" | "none" }>({ videoId: "", rating: "none" });
+  const relatedTracks = related.videoId === currentTrack?.videoId ? related.tracks : [];
+  const relatedLoading = isFullscreenPlayer && Boolean(currentTrack) && related.videoId !== currentTrack?.videoId;
+  const rating = trackRating.videoId === currentTrack?.videoId ? trackRating.rating : "none";
   const { toggleSaveTrack, isTrackSaved } = useLibraryStore();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const hasCurrentTrack = Boolean(currentTrack);
+
+  useEffect(() => {
+    if (!isFullscreenPlayer || !hasCurrentTrack) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    dialogRef.current?.focus({ preventScroll: true });
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || (event.target instanceof HTMLElement && event.target.closest("[data-sleep-timer-menu]"))) return;
+      if (event.key === "Escape") {
+        setFullscreenPlayer(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const controls = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), a[href], [tabindex='0']") || []).filter((element) => element.getClientRects().length > 0);
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialogRef.current)) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+      previousFocus?.focus({ preventScroll: true });
+    };
+  }, [isFullscreenPlayer, hasCurrentTrack, setFullscreenPlayer]);
 
   // Swipe-down to close
   const touchStartY = useRef<number | null>(null);
@@ -68,17 +108,19 @@ export function FullscreenPlayer() {
 
   // Fetch rating when track changes
   useEffect(() => {
-    if (!currentTrack?.videoId) return;
-    setRating("none");
-    fetch(`/api/rate?videoId=${currentTrack.videoId}`)
+    if (!currentTrack?.videoId || !isFullscreenPlayer) return;
+    const videoId = currentTrack.videoId;
+    let cancelled = false;
+    fetch(`/api/rate?videoId=${videoId}`)
       .then(r => r.ok ? r.json() : { rating: "none" })
-      .then(d => setRating(d.rating || "none"))
+      .then(d => { if (!cancelled) setTrackRating({ videoId, rating: d.rating || "none" }); })
       .catch(() => {});
-  }, [currentTrack?.videoId]);
+    return () => { cancelled = true; };
+  }, [currentTrack?.videoId, isFullscreenPlayer]);
 
   const handleRate = async (newRating: "like" | "dislike") => {
     const finalRating = rating === newRating ? "none" : newRating;
-    setRating(finalRating);
+    setTrackRating({ videoId: currentTrack!.videoId, rating: finalRating });
     fetch("/api/rate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -88,26 +130,24 @@ export function FullscreenPlayer() {
 
   // Fetch related songs when current track changes
   useEffect(() => {
-    if (!currentTrack?.videoId) return;
+    if (!currentTrack?.videoId || !isFullscreenPlayer) return;
     
     let cancelled = false;
-    setRelatedTracks([]);
-    setRelatedLoading(true);
+    const videoId = currentTrack.videoId;
 
     fetch(`/api/related?videoId=${currentTrack.videoId}`)
       .then((res) => res.ok ? res.json() : { tracks: [] })
       .then((data) => {
         if (!cancelled) {
-          setRelatedTracks(data.tracks || []);
-          setRelatedLoading(false);
+          setRelated({ videoId, tracks: data.tracks || [] });
         }
       })
       .catch(() => {
-        if (!cancelled) setRelatedLoading(false);
+        if (!cancelled) setRelated({ videoId, tracks: [] });
       });
 
     return () => { cancelled = true; };
-  }, [currentTrack?.videoId]);
+  }, [currentTrack?.videoId, isFullscreenPlayer]);
 
   if (!isFullscreenPlayer || !currentTrack) return null;
 
@@ -133,24 +173,28 @@ export function FullscreenPlayer() {
 
   return (
     <div
-      className="fixed inset-0 z-[100] bg-background flex flex-col animate-in slide-in-from-bottom duration-300"
+      ref={dialogRef}
+      tabIndex={-1}
+      role="dialog"
+      aria-label={`Now playing: ${currentTrack.title}`}
+      aria-modal="true"
+      className="fixed inset-0 z-[100] h-dvh bg-background flex flex-col animate-in slide-in-from-bottom transition-transform duration-300 motion-reduce:animate-none motion-reduce:transition-none outline-none"
       style={{
         transform: dragOffset > 0 ? `translateY(${dragOffset}px)` : undefined,
-        transition: dragOffset === 0 ? "transform 0.2s ease" : "none",
+        transition: dragOffset === 0 ? undefined : "none",
       }}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
     >
       {/* Top bar with tabs - add safe area padding for iOS notch */}
-      <div className="flex items-center justify-between px-4 md:px-6 h-12 md:h-14 pt-[env(safe-area-inset-top)] border-b border-outline-variant/10 flex-shrink-0">
+      <div onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd} className="flex items-center justify-between px-4 md:px-6 min-h-14 md:h-14 pt-[env(safe-area-inset-top)] border-b border-outline-variant/10 flex-shrink-0">
         <button
           onClick={() => setFullscreenPlayer(false)}
-          className="text-on-surface-variant hover:text-on-surface transition-colors p-1"
+          aria-label="Close now playing"
+          className="flex size-11 md:size-9 items-center justify-center rounded-full text-on-surface-variant hover:text-on-surface transition-colors focus-visible:outline-2 focus-visible:outline-primary"
         >
           <span className="material-symbols-outlined text-[24px] md:text-[28px]">keyboard_arrow_down</span>
         </button>
-        <div className="flex gap-4 md:gap-6">
+        <span className="text-sm font-semibold text-on-surface md:hidden">Now playing</span>
+        <div className="hidden md:flex gap-4 md:gap-6">
           {queueTabs.map((tab) => (
             <button
               key={tab}
@@ -165,13 +209,15 @@ export function FullscreenPlayer() {
             </button>
           ))}
         </div>
-        <div className="w-8" />
+        <div className="md:hidden"><SleepTimerMenu /></div>
+        <div className="hidden w-8 md:block" />
       </div>
 
       {/* Main content — stacked on mobile, side-by-side on desktop */}
-      <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+      <div className="min-h-0 flex-1 flex flex-col md:flex-row overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)] md:overflow-hidden md:pb-0">
         {/* Queue section (shown on mobile in tab area, on desktop as right panel) */}
-        <div className="flex-1 flex flex-col overflow-hidden md:flex-row">
+        <div className="flex-none flex flex-col md:flex-1 md:overflow-hidden md:flex-row">
+          <MobileNowPlaying key={currentTrack.videoId} track={currentTrack} rating={rating} onRate={handleRate} onPrevious={handlePrev} onNext={handleNext} />
           {/* Desktop: Left — Album art (hidden on mobile) */}
           <div className="hidden md:flex flex-1 items-center justify-center p-8 min-w-0">
             <div className="relative w-full max-w-[500px] aspect-square rounded-lg overflow-hidden bg-surface-container-highest shadow-2xl">
@@ -195,7 +241,14 @@ export function FullscreenPlayer() {
           </div>
 
           {/* Queue / content panel */}
-          <div className="flex-1 md:w-[400px] md:flex-none md:border-l border-outline-variant/10 flex flex-col overflow-hidden">
+          <div className="flex-none md:w-[400px] md:border-l border-outline-variant/10 flex flex-col md:overflow-hidden">
+            <div aria-label="Player sections" className="flex border-b border-outline-variant/20 px-4 md:hidden">
+              {queueTabs.map((tab) => (
+                <button key={tab} type="button" aria-pressed={activeTab === tab} onClick={() => setActiveTab(tab)} className={`min-h-12 flex-1 border-b-2 text-xs font-semibold tracking-wide focus-visible:outline-2 focus-visible:outline-primary ${activeTab === tab ? "border-on-surface text-on-surface" : "border-transparent text-on-surface-variant"}`}>
+                  {tab}
+                </button>
+              ))}
+            </div>
             {/* Playing from header */}
             <div className="px-4 py-3 border-b border-outline-variant/10 flex-shrink-0">
               <div className="flex items-center justify-between">
@@ -203,7 +256,7 @@ export function FullscreenPlayer() {
                   <p className="text-[12px] text-on-surface-variant">Playing from</p>
                   <p className="text-[14px] text-on-surface font-semibold">Your Queue</p>
                 </div>
-                <button className="flex items-center gap-1 text-on-surface-variant hover:text-on-surface text-[12px] font-semibold border border-outline-variant/30 px-3 py-1.5 rounded-full transition-colors">
+                <button className="hidden md:flex items-center gap-1 text-on-surface-variant hover:text-on-surface text-[12px] font-semibold border border-outline-variant/30 px-3 py-1.5 rounded-full transition-colors">
                   <span className="material-symbols-outlined text-[16px]">playlist_add</span>
                   Save
                 </button>
@@ -211,7 +264,7 @@ export function FullscreenPlayer() {
             </div>
 
             {/* Tab content */}
-            <div className="flex-1 overflow-y-auto">
+            <div className="md:flex-1 md:overflow-y-auto">
               {activeTab === "UP NEXT" && (
                 <div className="py-2">
                   {/* Currently playing */}
@@ -335,7 +388,7 @@ export function FullscreenPlayer() {
       </div>
 
       {/* Bottom player controls */}
-      <div className="border-t border-outline-variant/10 bg-surface-container/80 backdrop-blur-xl flex-shrink-0 pb-safe">
+      <div className="hidden md:block border-t border-outline-variant/10 bg-surface-container/80 backdrop-blur-xl flex-shrink-0 pb-safe">
         {/* Progress bar */}
         <div
           className="h-3 w-full bg-surface-container-highest cursor-pointer group"

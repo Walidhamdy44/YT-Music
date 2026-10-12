@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useQueueStore } from "@/stores/queueStore";
 import { usePlayerStore } from "@/stores/playerStore";
+import { useUIStore } from "@/stores/uiStore";
 import { playTrack } from "@/components/player/PlayerProvider";
 import type { CachedTrackMetadata } from "@/lib/cacheMetadataStore";
 import type { Track } from "@/types";
@@ -172,14 +173,32 @@ export function StorageDashboard() {
     playTrack(shuffled[0], true);
   };
 
-  const playFolder = (folder: OfflineFolder) => {
+  const playFolder = (folder: OfflineFolder, shuffle = false) => {
     const tracks = (folder.videoIds ?? [])
       .map((id) => cachedTracks.get(id))
       .filter((t): t is CachedTrackMetadata => !!t)
-      .map((m): Track => ({ id: m.videoId, videoId: m.videoId, title: m.title, artist: m.artist, thumbnail: m.thumbnail, duration: m.duration }));
+      .map(cachedMetadataToTrack);
     if (!tracks.length) return;
-    useQueueStore.getState().setQueue(tracks, 0);
-    playTrack(tracks[0], true);
+    const queue = shuffle ? shuffleTracks(tracks) : tracks;
+    useQueueStore.getState().setQueue(queue, 0);
+    if (usePlayerStore.getState().isShuffled !== shuffle) usePlayerStore.getState().toggleShuffle();
+    void playTrack(queue[0], true);
+  };
+
+  const playDownloadedTrack = (selectedTrack: CachedTrackMetadata) => {
+    const player = usePlayerStore.getState();
+    if (player.currentTrack?.videoId === selectedTrack.videoId && player.status !== "idle" && player.status !== "error" && window.matchMedia("(max-width: 767px)").matches) {
+      useUIStore.getState().setFullscreenPlayer(true);
+      return;
+    }
+    const tracks = displayTracks.map(cachedMetadataToTrack);
+    const selectedIndex = tracks.findIndex(
+      (track) => track.videoId === selectedTrack.videoId,
+    );
+    if (selectedIndex < 0) return;
+
+    useQueueStore.getState().setQueue(tracks, selectedIndex);
+    void playTrack(tracks[selectedIndex], true);
   };
 
   const playDownloadedTrack = (selectedTrack: CachedTrackMetadata) => {
@@ -243,7 +262,7 @@ export function StorageDashboard() {
           <div className="flex items-center gap-1">
             {openFolder ? (
               <>
-                <button onClick={() => playFolder(openFolder)} className="p-1.5 rounded-full hover:bg-surface-container transition-colors" title="Play all"><Play size={14} className="text-on-surface-variant" /></button>
+                <button onClick={() => playFolder(openFolder)} className="hidden md:flex p-1.5 rounded-full hover:bg-surface-container transition-colors" title="Play all"><Play size={14} className="text-on-surface-variant" /></button>
                 <button onClick={() => setShowAddSongsModal(true)} className="p-1.5 rounded-full hover:bg-surface-container transition-colors" title="Add songs to folder"><ListPlus size={14} className="text-on-surface-variant" /></button>
                 <button onClick={() => setEditingFolder(openFolder)} className="p-1.5 rounded-full hover:bg-surface-container transition-colors" title="Rename"><Pencil size={14} className="text-on-surface-variant" /></button>
                 <button onClick={() => setDeletingFolder(openFolder)} className="p-1.5 rounded-full hover:bg-destructive/10 text-on-surface-variant hover:text-destructive transition-colors" title="Delete folder"><Trash2 size={14} /></button>
@@ -255,6 +274,17 @@ export function StorageDashboard() {
             )}
           </div>
         </div>
+
+        {openFolder && (
+          <div className="grid grid-cols-2 gap-2 md:hidden">
+            <Button variant="outline" disabled={displayTracks.length === 0} onClick={() => playFolder(openFolder)} className="min-h-11 gap-2">
+              <Play size={18} aria-hidden="true" /> Play all
+            </Button>
+            <Button disabled={displayTracks.length === 0} onClick={() => playFolder(openFolder, true)} className="min-h-11 gap-2">
+              <Shuffle size={18} aria-hidden="true" /> Shuffle
+            </Button>
+          </div>
+        )}
 
         {/* Folder grid */}
         {!openFolder && folders.length > 0 && (
