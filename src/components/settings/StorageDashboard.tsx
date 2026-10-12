@@ -201,17 +201,6 @@ export function StorageDashboard() {
     void playTrack(tracks[selectedIndex], true);
   };
 
-  const playDownloadedTrack = (selectedTrack: CachedTrackMetadata) => {
-    const tracks = displayTracks.map(cachedMetadataToTrack);
-    const selectedIndex = tracks.findIndex(
-      (track) => track.videoId === selectedTrack.videoId,
-    );
-    if (selectedIndex < 0) return;
-
-    useQueueStore.getState().setQueue(tracks, selectedIndex);
-    void playTrack(tracks[selectedIndex], true);
-  };
-
   return (
     <div className="max-w-3xl mx-auto p-6 space-y-6">
       <h1 className="text-2xl font-bold">Offline Storage</h1>
